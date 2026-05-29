@@ -204,3 +204,36 @@ HRESULT MeshRenderer::draw(rendering::ArcBallCamera *camera, const iVector2 &vie
 
     return S_OK;
 }
+
+// Clip-plane virtuals (mirror AngleRenderer/BondRenderer), forwarding each op to
+// BOTH the face and edge shaders so faces and edges clip in lockstep. UniverseRenderer
+// owns the global GL ClipDistanceN feature and replays equations on registration, so we
+// do not seed equations in start() (that would double-apply).
+const unsigned MeshRenderer::addClipPlaneEquation(const Magnum::Vector4& pe) {
+    unsigned int id = _clipPlanes.size();
+    _clipPlanes.push_back(pe);
+    _shaderFaces.setclipPlaneEquation(id, pe);
+    _shaderEdges.setclipPlaneEquation(id, pe);
+    return id;
+}
+
+const unsigned MeshRenderer::removeClipPlaneEquation(const unsigned int& id) {
+    _clipPlanes.erase(_clipPlanes.begin() + id);
+
+    for(unsigned int i = id; i < _clipPlanes.size(); i++) {
+        _shaderFaces.setclipPlaneEquation(i, _clipPlanes[i]);
+        _shaderEdges.setclipPlaneEquation(i, _clipPlanes[i]);
+    }
+
+    return _clipPlanes.size();
+}
+
+void MeshRenderer::setClipPlaneEquation(unsigned id, const Magnum::Vector4& pe) {
+    if(id > _shaderFaces.clipPlaneCount()) {
+        tf_exp(std::invalid_argument("invalid id for clip plane"));
+    }
+
+    _shaderFaces.setclipPlaneEquation(id, pe);
+    _shaderEdges.setclipPlaneEquation(id, pe);
+    _clipPlanes[id] = pe;
+}

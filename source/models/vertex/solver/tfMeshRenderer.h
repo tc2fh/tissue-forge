@@ -45,6 +45,10 @@ namespace TissueForge::models::vertex {
 
         HRESULT draw(rendering::ArcBallCamera *camera, const iVector2 &viewportSize, const fMatrix4 &modelViewMat) override;
 
+        const unsigned addClipPlaneEquation(const Magnum::Vector4& pe) override;
+        const unsigned removeClipPlaneEquation(const unsigned int& id) override;
+        void setClipPlaneEquation(unsigned id, const Magnum::Vector4& pe) override;
+
     private:
 
         std::vector<Magnum::Vector4> _clipPlanes;
