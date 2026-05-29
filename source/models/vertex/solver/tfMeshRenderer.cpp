@@ -60,10 +60,15 @@ static inline HRESULT render_meshFacesEdges(MeshFaceInstanceData *faceData,
     Magnum::Vector3 color_s, color_e = {0.f, 0.f, 0.f};
     
     rendering::Style *style = s->style ? s->style : s->type()->style;
-    if(!style) 
+    if(!style)
         color_s = {0.2f, 1.f, 1.f};
-    else 
+    else
         color_s = style->color;
+
+    // Honor STYLE_VISIBLE (Patch B, Option A): a hidden surface keeps its fixed-stride
+    // buffer slots but collapses all geometry to the centroid -> zero-area triangles and
+    // zero-length lines that rasterize to nothing. null style => visible (color fallback).
+    bool visible = style ? style->getVisible() : true;
 
     Magnum::Vector3 centroid = s->getCentroid();
 
@@ -73,8 +78,8 @@ static inline HRESULT render_meshFacesEdges(MeshFaceInstanceData *faceData,
         Vertex *vi = vertices[j];
         Vertex *vk = vertices[j == vertices.size() - 1 ? 0 : j + 1];
 
-        fVector3 posi = centroid + metrics::relativePosition(vi->getPosition(), centroid);
-        fVector3 posk = centroid + metrics::relativePosition(vk->getPosition(), centroid);
+        fVector3 posi = visible ? centroid + metrics::relativePosition(vi->getPosition(), centroid) : centroid;
+        fVector3 posk = visible ? centroid + metrics::relativePosition(vk->getPosition(), centroid) : centroid;
 
         MeshEdgeInstanceData *edgeData_j = &edgeData[2 * (idx + j)];
         edgeData_j[0].position = posi;
