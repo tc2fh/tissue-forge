@@ -61,7 +61,16 @@
 #endif
 
 
-namespace TissueForge { 
+namespace TissueForge {
+
+
+	// Forward-declare the runner task queue in this namespace. Without it, the
+	// `struct queue *queues;` member of `engine` below would forward-declare via
+	// the bare elaborated-specifier -- which breaks in the SWIG python-wrapper TU,
+	// where tf_types.i injects `using namespace std;` and the bare `struct queue`
+	// instead binds to the std::queue template (hard error on clang>=~16). With
+	// this forward declaration, unqualified lookup finds TissueForge::queue first.
+	struct queue;
 
 
 	/* some constants */
