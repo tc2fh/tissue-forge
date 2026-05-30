@@ -76,6 +76,37 @@
             self.setEdgeSplitDist(_val)
 
         @property
+        def reconnect_length(self) -> float:
+            """Length below which a short interior edge / small triangular face is reconnected
+            (native 3D T1 / Okuda I<->H RNR; Okuda Condition 2, Delta_l_th). Absolute length;
+            0 disables reconnection (the default)."""
+            return self.getReconnectLength()
+
+        @reconnect_length.setter
+        def reconnect_length(self, _val: float):
+            self.setReconnectLength(_val)
+
+        @property
+        def reconnect_hysteresis(self) -> float:
+            """Placement hysteresis: features created by a reconnection are sized at
+            reconnect_length*(1+reconnect_hysteresis) (anti-thrash gap). 0 = faithful."""
+            return self.getReconnectHysteresis()
+
+        @reconnect_hysteresis.setter
+        def reconnect_hysteresis(self, _val: float):
+            self.setReconnectHysteresis(_val)
+
+        @property
+        def reconnect_energy_gate(self) -> bool:
+            """Whether to reject reconnections that raise local heterotypic energy (a DEPARTURE
+            from Okuda's geometric trigger; an instability driver). Default False."""
+            return self.getReconnectEnergyGate()
+
+        @reconnect_energy_gate.setter
+        def reconnect_energy_gate(self, _val: bool):
+            self.setReconnectEnergyGate(_val)
+
+        @property
         def collision_2d(self) -> bool:
             """Whether 2D collisions are implemented"""
             return self.getCollision2D()

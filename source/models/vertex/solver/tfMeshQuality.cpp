@@ -550,6 +550,37 @@ struct VertexSplitOperation : MeshQualityOperation {
 };
 
 
+/**
+ * Reconnects a short interior edge or a small triangular face: the native 3D T1 / reversible
+ * network reconnection (RNR), i.e. the Okuda I<->H face<->edge swap (Okuda et al. 2013, Biomech
+ * Model Mechanobiol 12:627-644). This is the topology operation TissueForge otherwise lacks; the
+ * other 3D quality ops are only degenerate collapses (BodyDemote/SurfaceDemote/EdgeDemote).
+ *
+ * Phase A: scaffolding stub. It never fires (check() returns false), so wiring it into doQuality
+ * is a no-op. The neighborhood walk + Okuda Condition-4 guards (check/prep/targets) are filled in
+ * Phase B (porting rnr/topology.py + rnr/conditions.py); the manual surface-list surgery + Okuda
+ * Appendix-1 vertex placement (implement/numNew*) in Phase C (porting rnr/reconnect.py), mirroring
+ * the structure of the ops above. Translated from our validated Python prototype, not copied from
+ * the GPL tvm/3DVertVor reference.
+ */
+struct ReconnectionOperation : MeshQualityOperation {
+
+    ReconnectionOperation(Mesh *_mesh) : MeshQualityOperation(_mesh) {
+        flags = MeshQualityOperation::Flag::Active;
+    }
+
+    bool check() override { return false; }  // Phase A: never fires
+
+    void prep() override {}
+
+    size_t numNewVertices() const override { return 0; }
+
+    size_t numNewSurfaces() const override { return 0; }
+
+    std::vector<int> implement() override { return {}; }
+};
+
+
 /////////////////
 // MeshQuality //
 /////////////////
@@ -753,11 +784,36 @@ static HRESULT MeshQuality_constructOperationsBody(
 
     ops_active.clear();
     ops_active.reserve(ops.size());
-    for(auto &op : ops) 
-        if(op) 
+    for(auto &op : ops)
+        if(op)
             ops_active.push_back(op);
     std::set<MeshQualityOperation*> op_heads_set = MeshQualityOperation_headOperations(ops_active);
     op_heads = std::vector<MeshQualityOperation*>(op_heads_set.begin(), op_heads_set.end());
+
+    return S_OK;
+}
+
+static HRESULT MeshQuality_constructOperationsReconnection(
+    Mesh *mesh,
+    const std::vector<bool> &passMask,
+    const FloatP_t &reconnectLength,
+    const FloatP_t &reconnectHysteresis,
+    const bool &reconnectEnergyGate,
+    std::vector<MeshQualityOperation*> &ops_active,
+    std::vector<MeshQualityOperation*> &op_heads
+) {
+    ops_active.clear();
+    op_heads.clear();
+
+    // Disabled unless a positive trigger length (Okuda Condition 2, Delta_l_th) is configured.
+    if(reconnectLength <= 0)
+        return S_OK;
+
+    // Phase B (TODO): parallel scan over surfaces for short interior edges (I->H candidates,
+    // length < reconnectLength) and small triangular faces (H->I candidates, max edge <
+    // reconnectLength) that form a valid Okuda [I]/[H] neighborhood and pass the Condition-4
+    // guards; build a ReconnectionOperation per legal candidate; then MeshQuality_constructChains
+    // to serialize conflicting ops via overlapping targets. Phase A constructs no operations.
 
     return S_OK;
 }
@@ -860,11 +916,15 @@ static HRESULT MeshQuality_clearOperations(std::vector<MeshQualityOperation*> &o
 }
 
 MeshQuality::MeshQuality(
-    const FloatP_t &vertexMergeDistCf, 
-    const FloatP_t &surfaceDemoteAreaCf, 
-    const FloatP_t &bodyDemoteVolumeCf, 
-    const FloatP_t &_edgeSplitDistCf
-) : 
+    const FloatP_t &vertexMergeDistCf,
+    const FloatP_t &surfaceDemoteAreaCf,
+    const FloatP_t &bodyDemoteVolumeCf,
+    const FloatP_t &_edgeSplitDistCf,
+    const FloatP_t &_reconnectLength
+) :
+    reconnectLength{_reconnectLength},
+    reconnectHysteresis{0.0},
+    reconnectEnergyGate{false},
     _working{false},
     collision2D{true}
 {
@@ -876,6 +936,8 @@ MeshQuality::MeshQuality(
     surfaceDemoteArea = uarea * surfaceDemoteAreaCf;
     bodyDemoteVolume = uvolu * bodyDemoteVolumeCf;
     edgeSplitDist = _edgeSplitDistCf * vertexMergeDist;
+    // reconnectLength is an ABSOLUTE length (Okuda Delta_l_th), not box-scaled like the others;
+    // default 0 keeps the reconnection pass disabled (a no-op) until configured.
 }
 
 std::string MeshQuality::str() const {
@@ -886,6 +948,9 @@ std::string MeshQuality::str() const {
     ss << "surfaceDemoteArea="  << this->surfaceDemoteArea              << ", ";
     ss << "bodyDemoteVolume="   << this->bodyDemoteVolume               << ", ";
     ss << "edgeSplitDist="      << this->edgeSplitDist                  << ", ";
+    ss << "reconnectLength="    << this->reconnectLength                << ", ";
+    ss << "reconnectHysteresis="<< this->reconnectHysteresis            << ", ";
+    ss << "reconnectEnergyGate="<< (this->reconnectEnergyGate ? "yes" : "no") << ", ";
     ss << "collision2D="        << (this->collision2D ? "yes" : "no")   << ", ";
     ss << "working="            << (this->_working    ? "yes" : "no");
     ss << ")";
@@ -947,15 +1012,30 @@ HRESULT MeshQuality::doQuality() {
     for(auto &i : excludedBodies) 
         if(i < passMask.size()) 
             passMask[i] = true;
-    if(MeshQuality_constructOperationsBody(mesh, passMask, bodyDemoteVolume, op_active, op_heads) != S_OK || 
-        MeshQuality_doOperations(mesh, op_active, op_heads, affectedChildren) != S_OK || 
+    if(MeshQuality_constructOperationsBody(mesh, passMask, bodyDemoteVolume, op_active, op_heads) != S_OK ||
+        MeshQuality_doOperations(mesh, op_active, op_heads, affectedChildren) != S_OK ||
+        MeshQuality_clearOperations(op_active) != S_OK) {
+        _working = false;
+        return E_FAIL;
+    }
+
+    // Reconnection checks (native 3D T1 / Okuda I<->H RNR). The trigger lives on surfaces
+    // (a short interior edge is a consecutive vertex pair on a surface; an H-state feature is a
+    // triangular surface), so the pass scans surfaces. It is a no-op unless reconnectLength > 0.
+
+    passMask = std::vector<bool>(mesh->sizeSurfaces(), false);
+    for(auto &i : excludedSurfaces)
+        if(i < passMask.size())
+            passMask[i] = true;
+    if(MeshQuality_constructOperationsReconnection(mesh, passMask, reconnectLength, reconnectHysteresis, reconnectEnergyGate, op_active, op_heads) != S_OK ||
+        MeshQuality_doOperations(mesh, op_active, op_heads, affectedChildren) != S_OK ||
         MeshQuality_clearOperations(op_active) != S_OK) {
         _working = false;
         return E_FAIL;
     }
 
     _working = false;
-    
+
     return S_OK;
 }
 
@@ -981,9 +1061,28 @@ HRESULT MeshQuality::setBodyDemoteVolume(const FloatP_t &_val) {
 }
 
 HRESULT MeshQuality::setEdgeSplitDist(const FloatP_t &_val) {
-    if(_val <= 0) 
+    if(_val <= 0)
         return E_FAIL;
     edgeSplitDist = _val;
+    return S_OK;
+}
+
+HRESULT MeshQuality::setReconnectLength(const FloatP_t &_val) {
+    if(_val < 0)
+        return E_FAIL;
+    reconnectLength = _val;
+    return S_OK;
+}
+
+HRESULT MeshQuality::setReconnectHysteresis(const FloatP_t &_val) {
+    if(_val < 0)
+        return E_FAIL;
+    reconnectHysteresis = _val;
+    return S_OK;
+}
+
+HRESULT MeshQuality::setReconnectEnergyGate(const bool &_val) {
+    reconnectEnergyGate = _val;
     return S_OK;
 }
 
@@ -1032,6 +1131,9 @@ namespace TissueForge::io {
         TF_IOTOEASY(fileElement, metaData, "surfaceDemoteArea", dataElement.getSurfaceDemoteArea());
         TF_IOTOEASY(fileElement, metaData, "bodyDemoteVolume", dataElement.getBodyDemoteVolume());
         TF_IOTOEASY(fileElement, metaData, "edgeSplitDist", dataElement.getEdgeSplitDist());
+        TF_IOTOEASY(fileElement, metaData, "reconnectLength", dataElement.getReconnectLength());
+        TF_IOTOEASY(fileElement, metaData, "reconnectHysteresis", dataElement.getReconnectHysteresis());
+        TF_IOTOEASY(fileElement, metaData, "reconnectEnergyGate", dataElement.getReconnectEnergyGate());
         TF_IOTOEASY(fileElement, metaData, "collision2D", dataElement.getCollision2D());
         TF_IOTOEASY(fileElement, metaData, "excludedVertices", dataElement.getExcludedVertices());
         TF_IOTOEASY(fileElement, metaData, "excludedSurfaces", dataElement.getExcludedSurfaces());
@@ -1060,6 +1162,30 @@ namespace TissueForge::io {
         FloatP_t edgeSplitDist;
         TF_IOFROMEASY(fileElement, metaData, "edgeSplitDist", &edgeSplitDist);
         dataElement->setEdgeSplitDist(edgeSplitDist);
+
+        // Reconnection knobs are read optionally (default if absent) so meshes saved by builds
+        // before the native RNR port still deserialize.
+        {
+            ::TissueForge::io::IOChildMap _rcChildren = ::TissueForge::io::IOElement::children(fileElement);
+
+            FloatP_t reconnectLength = 0.0;
+            auto _rlItr = _rcChildren.find("reconnectLength");
+            if(_rlItr != _rcChildren.end())
+                ::TissueForge::io::fromFile(_rlItr->second, metaData, &reconnectLength);
+            dataElement->setReconnectLength(reconnectLength);
+
+            FloatP_t reconnectHysteresis = 0.0;
+            auto _rhItr = _rcChildren.find("reconnectHysteresis");
+            if(_rhItr != _rcChildren.end())
+                ::TissueForge::io::fromFile(_rhItr->second, metaData, &reconnectHysteresis);
+            dataElement->setReconnectHysteresis(reconnectHysteresis);
+
+            bool reconnectEnergyGate = false;
+            auto _rgItr = _rcChildren.find("reconnectEnergyGate");
+            if(_rgItr != _rcChildren.end())
+                ::TissueForge::io::fromFile(_rgItr->second, metaData, &reconnectEnergyGate);
+            dataElement->setReconnectEnergyGate(reconnectEnergyGate);
+        }
 
         bool collision2D;
         TF_IOFROMEASY(fileElement, metaData, "collision2D", &collision2D);

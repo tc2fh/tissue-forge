@@ -231,6 +231,37 @@ namespace TissueForge::models::vertex {
         FloatP_t edgeSplitDist;
 
         /**
+         * Reconnection trigger length (Okuda Condition 2, Delta_l_th).
+         *
+         * Length below which the native 3D T1 / reversible network reconnection (RNR, the
+         * Okuda I<->H face<->edge swap) fires: a short interior edge is reconnected (I->H)
+         * when its length is below this value, and a small triangular face is reconnected
+         * (H->I) when its longest edge is below it. This is an ABSOLUTE length (physical
+         * units, like an edge length), NOT a box-fraction coefficient like vertexMergeDist.
+         * 0 disables reconnection (the default), so the reconnection pass is a no-op until set.
+         */
+        FloatP_t reconnectLength;
+
+        /**
+         * Reconnection placement hysteresis.
+         *
+         * Features created by a reconnection are sized at reconnectLength*(1+reconnectHysteresis),
+         * so a fresh feature sits above the trigger and does not immediately reconnect back
+         * (an anti-thrash gap). 0 = faithful (infinitesimal features, as in Okuda).
+         */
+        FloatP_t reconnectHysteresis;
+
+        /**
+         * Optional energy gate on reconnection (OFF by default).
+         *
+         * When true, a reconnection that raises the local heterotypic interfacial energy is
+         * rejected (greedy/Metropolis-at-T=0). This is a DEPARTURE from Okuda's purely
+         * geometric Condition-2 trigger and is an instability driver; the faithful default
+         * is false.
+         */
+        bool reconnectEnergyGate;
+
+        /**
          * Flag for whether doing 2D collisions
          */
         bool collision2D;
@@ -247,10 +278,11 @@ namespace TissueForge::models::vertex {
     public:
 
         MeshQuality(
-            const FloatP_t &vertexMergeDistCf=0.0001, 
-            const FloatP_t &surfaceDemoteAreaCf=0.0001, 
-            const FloatP_t &bodyDemoteVolumeCf=0.0001, 
-            const FloatP_t &_edgeSplitDistCf=2.0
+            const FloatP_t &vertexMergeDistCf=0.0001,
+            const FloatP_t &surfaceDemoteAreaCf=0.0001,
+            const FloatP_t &bodyDemoteVolumeCf=0.0001,
+            const FloatP_t &_edgeSplitDistCf=2.0,
+            const FloatP_t &_reconnectLength=0.0
         );
 
         /**
@@ -331,8 +363,44 @@ namespace TissueForge::models::vertex {
         HRESULT setEdgeSplitDist(const FloatP_t &_val);
 
         /**
+         * @brief Get the reconnection trigger length (Okuda Condition 2, Delta_l_th)
+         */
+        FloatP_t getReconnectLength() const { return reconnectLength; };
+
+        /**
+         * @brief Set the reconnection trigger length (Okuda Condition 2, Delta_l_th)
+         *
+         * @param _val length (absolute; 0 disables reconnection)
+         */
+        HRESULT setReconnectLength(const FloatP_t &_val);
+
+        /**
+         * @brief Get the reconnection placement hysteresis
+         */
+        FloatP_t getReconnectHysteresis() const { return reconnectHysteresis; };
+
+        /**
+         * @brief Set the reconnection placement hysteresis
+         *
+         * @param _val hysteresis (>= 0)
+         */
+        HRESULT setReconnectHysteresis(const FloatP_t &_val);
+
+        /**
+         * @brief Get whether the optional reconnection energy gate is enabled
+         */
+        bool getReconnectEnergyGate() const { return reconnectEnergyGate; };
+
+        /**
+         * @brief Set whether the optional reconnection energy gate is enabled
+         *
+         * @param _val flag (a DEPARTURE from Okuda's geometric trigger; default false)
+         */
+        HRESULT setReconnectEnergyGate(const bool &_val);
+
+        /**
          * @brief Get whether 2D collisions are implemented
-         * 
+         *
          * @return true if 2D collisions are implemented
          */
         bool getCollision2D() const { return collision2D; }
