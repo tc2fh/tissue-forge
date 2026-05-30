@@ -573,8 +573,8 @@ struct VertexSplitOperation : MeshQualityOperation {
 // Python prototype rnr/topology.py (the neighborhood walk) and rnr/conditions.py (the
 // Condition-4 guards) and the Okuda 2013 equations -- NOT copied from the GPL tvm/3DVertVor
 // reference (license boundary, CLAUDE.md). The MUTATE half (Okuda Appendix-1 vertex
-// placement + manual surface surgery) is Phase C; here ReconnectionOperation::implement()
-// is still a no-op stub, so wiring this into doQuality remains observationally inert.
+// placement + manual surface surgery) lives in ReconnectionOperation::implement() (Phase C,
+// done); Phase D wires the scan below into doQuality's live quality loop as the active pass.
 //
 // TissueForge has no explicit Edge object: an "edge" is an ordered consecutive vertex pair
 // in a surface's vertex ring. The whole walk uses only TF adjacency helpers
@@ -1201,6 +1201,7 @@ struct ReconnectionOperation : MeshQualityOperation {
     FloatP_t dlTh;             // reconnect length (Okuda Delta_l_th), for Phase-C placement
     FloatP_t hysteresis;       // placement hysteresis (Phase C)
     bool energyGate;           // optional greedy gate (Phase C+); OFF by default
+    bool enforceTrigger;       // live doQuality ops re-check Condition 2; force ops bypass it
     std::unordered_set<int> affectedChildren;
     bool lastOk = false;
     std::string lastReason;
@@ -1209,11 +1210,13 @@ struct ReconnectionOperation : MeshQualityOperation {
 
     /** I->H: short edge (cfg.v10, cfg.v11) -> triangular face. */
     ReconnectionOperation(Mesh *_mesh, const RNR_IConfig &cfg,
-                          FloatP_t _dlTh, FloatP_t _hys, bool _eg) : MeshQualityOperation(_mesh) {
+                          FloatP_t _dlTh, FloatP_t _hys, bool _eg,
+                          bool _enforceTrigger=true) : MeshQualityOperation(_mesh) {
         flags = MeshQualityOperation::Flag::Active;
         kind = I2H;
         v10Id = cfg.v10Id; v11Id = cfg.v11Id; triId = -1;
         dlTh = _dlTh; hysteresis = _hys; energyGate = _eg;
+        enforceTrigger = _enforceTrigger;
         // targets = every surface this op modifies (3 side + 3 top + 3 bottom faces), so the
         // dependency graph serializes any other op touching one of them.
         std::unordered_set<int> t;
@@ -1225,11 +1228,13 @@ struct ReconnectionOperation : MeshQualityOperation {
 
     /** H->I: triangular face -> short edge. */
     ReconnectionOperation(Mesh *_mesh, const RNR_HConfig &cfg,
-                          FloatP_t _dlTh, FloatP_t _hys, bool _eg) : MeshQualityOperation(_mesh) {
+                          FloatP_t _dlTh, FloatP_t _hys, bool _eg,
+                          bool _enforceTrigger=true) : MeshQualityOperation(_mesh) {
         flags = MeshQualityOperation::Flag::Active;
         kind = H2I;
         v10Id = -1; v11Id = -1; triId = cfg.triangleId;
         dlTh = _dlTh; hysteresis = _hys; energyGate = _eg;
+        enforceTrigger = _enforceTrigger;
         std::unordered_set<int> t;
         t.insert(cfg.triangleId);
         for(auto &a : cfg.arms) t.insert(a.sideSurfaceId);
@@ -1245,12 +1250,14 @@ struct ReconnectionOperation : MeshQualityOperation {
             if(!v10 || !v11) return false;
             RNR_IConfig cfg;
             if(!rnr_iNeighbourhood(v10, v11, cfg)) return false;
+            if(enforceTrigger && cfg.length >= dlTh) return false;
             return rnr_iToHVeto(cfg).empty();
         } else {
             Surface *tri = mesh->getSurface(triId);
             if(!tri) return false;
             RNR_HConfig cfg;
             if(!rnr_hNeighbourhood(tri, cfg)) return false;
+            if(enforceTrigger && cfg.maxEdge >= dlTh) return false;
             return rnr_hToIVeto(cfg).empty();
         }
     }
@@ -1751,10 +1758,10 @@ static HRESULT MeshQuality_constructOperationsReconnection(
     // an H->I feature IS a triangular surface). targets reference this same id space, so
     // MeshQuality_constructChains serializes ops with overlapping touched surfaces.
     //
-    // Phase B note: the scan is serial (the [I]/[H] walks read shared adjacency and build STL
-    // containers); a parallel_for like the sibling scans is a Phase-D optimization. And
-    // ReconnectionOperation::implement() is still a no-op, so even when this constructs ops they
-    // mutate nothing -- the pass is observationally inert until the Phase-C surgery lands.
+    // The scan is serial (the [I]/[H] walks read shared adjacency and build STL containers); a
+    // parallel_for like the sibling scans is a possible later optimization. As of Phase C/D the
+    // ops returned here mutate the mesh: each runs the real ReconnectionOperation::implement()
+    // surgery when MeshQuality_doOperations walks the chain inside doQuality.
     std::vector<MeshQualityOperation*> ops(mesh->sizeSurfaces(), 0);
 
     // I->H candidates: short interior edges in a legal [I] neighborhood.
@@ -1911,6 +1918,7 @@ MeshQuality::MeshQuality(
     reconnectLength{_reconnectLength},
     reconnectHysteresis{0.0},
     reconnectEnergyGate{false},
+    stockQualityOps{true},
     _working{false},
     collision2D{true}
 {
@@ -1937,6 +1945,7 @@ std::string MeshQuality::str() const {
     ss << "reconnectLength="    << this->reconnectLength                << ", ";
     ss << "reconnectHysteresis="<< this->reconnectHysteresis            << ", ";
     ss << "reconnectEnergyGate="<< (this->reconnectEnergyGate ? "yes" : "no") << ", ";
+    ss << "stockQualityOps="    << (this->stockQualityOps ? "yes" : "no") << ", ";
     ss << "collision2D="        << (this->collision2D ? "yes" : "no")   << ", ";
     ss << "working="            << (this->_working    ? "yes" : "no");
     ss << ")";
@@ -1953,6 +1962,12 @@ HRESULT MeshQuality::doQuality() {
     std::vector<MeshQualityOperation*> op_active, op_heads;
     std::vector<int> affectedChildren;
     std::vector<bool> passMask;
+
+    // Stock TissueForge quality checks. These legacy passes are preserved by default, but
+    // Phase-D native RNR harnesses disable them so doQuality() exercises only the Okuda
+    // reconnection pass; the stock degenerate-collapse passes are known to crash on finite
+    // Kelvin blocks independently of RNR (see rnr/PORTING_NOTES.md section 6b).
+    if(stockQualityOps) {
 
     // Vertex checks
     
@@ -2003,6 +2018,8 @@ HRESULT MeshQuality::doQuality() {
         MeshQuality_clearOperations(op_active) != S_OK) {
         _working = false;
         return E_FAIL;
+    }
+
     }
 
     // Reconnection checks (native 3D T1 / Okuda I<->H RNR). The trigger lives on surfaces
@@ -2072,6 +2089,11 @@ HRESULT MeshQuality::setReconnectEnergyGate(const bool &_val) {
     return S_OK;
 }
 
+HRESULT MeshQuality::setStockQualityOps(const bool &_val) {
+    stockQualityOps = _val;
+    return S_OK;
+}
+
 std::string MeshQuality::analyzeIReconnection(const unsigned int &v10Id, const unsigned int &v11Id) const {
     Mesh *mesh = Mesh::get();
     if(!mesh) return "{\"valid\": false, \"reason\": \"no mesh\"}";
@@ -2134,7 +2156,7 @@ std::string MeshQuality::forceReconnectIToH(const unsigned int &v10Id, const uns
     if(!veto.empty())
         return rnr_reconnectResultJson(false, veto, -1, {});
 
-    ReconnectionOperation op(mesh, cfg, reconnectLength, reconnectHysteresis, reconnectEnergyGate);
+    ReconnectionOperation op(mesh, cfg, reconnectLength, reconnectHysteresis, reconnectEnergyGate, false);
     op.prep();
     if(!op.check())
         return rnr_reconnectResultJson(false, "operation no longer valid", -1, {});
@@ -2163,7 +2185,7 @@ std::string MeshQuality::forceReconnectHToI(const unsigned int &triId) const {
     if(!veto.empty())
         return rnr_reconnectResultJson(false, veto, -1, {});
 
-    ReconnectionOperation op(mesh, cfg, reconnectLength, reconnectHysteresis, reconnectEnergyGate);
+    ReconnectionOperation op(mesh, cfg, reconnectLength, reconnectHysteresis, reconnectEnergyGate, false);
     op.prep();
     if(!op.check())
         return rnr_reconnectResultJson(false, "operation no longer valid", -1, {});
@@ -2225,6 +2247,7 @@ namespace TissueForge::io {
         TF_IOTOEASY(fileElement, metaData, "reconnectLength", dataElement.getReconnectLength());
         TF_IOTOEASY(fileElement, metaData, "reconnectHysteresis", dataElement.getReconnectHysteresis());
         TF_IOTOEASY(fileElement, metaData, "reconnectEnergyGate", dataElement.getReconnectEnergyGate());
+        TF_IOTOEASY(fileElement, metaData, "stockQualityOps", dataElement.getStockQualityOps());
         TF_IOTOEASY(fileElement, metaData, "collision2D", dataElement.getCollision2D());
         TF_IOTOEASY(fileElement, metaData, "excludedVertices", dataElement.getExcludedVertices());
         TF_IOTOEASY(fileElement, metaData, "excludedSurfaces", dataElement.getExcludedSurfaces());
@@ -2276,6 +2299,12 @@ namespace TissueForge::io {
             if(_rgItr != _rcChildren.end())
                 ::TissueForge::io::fromFile(_rgItr->second, metaData, &reconnectEnergyGate);
             dataElement->setReconnectEnergyGate(reconnectEnergyGate);
+
+            bool stockQualityOps = true;
+            auto _sqItr = _rcChildren.find("stockQualityOps");
+            if(_sqItr != _rcChildren.end())
+                ::TissueForge::io::fromFile(_sqItr->second, metaData, &stockQualityOps);
+            dataElement->setStockQualityOps(stockQualityOps);
         }
 
         bool collision2D;

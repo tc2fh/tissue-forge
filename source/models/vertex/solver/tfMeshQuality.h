@@ -262,6 +262,17 @@ namespace TissueForge::models::vertex {
         bool reconnectEnergyGate;
 
         /**
+         * Flag for whether stock quality operations are enabled.
+         *
+         * These are TissueForge's pre-existing vertex split/merge, surface/body demote, and
+         * 2D collision repair passes. They remain enabled by default to preserve historical
+         * MeshQuality behavior. Native RNR Phase D can disable them so doQuality() runs the
+         * Okuda I<->H reconnection pass in isolation; this avoids the known finite-Kelvin
+         * stock-collapse crash while still exercising the live MeshQuality scheduler.
+         */
+        bool stockQualityOps;
+
+        /**
          * Flag for whether doing 2D collisions
          */
         bool collision2D;
@@ -397,6 +408,21 @@ namespace TissueForge::models::vertex {
          * @param _val flag (a DEPARTURE from Okuda's geometric trigger; default false)
          */
         HRESULT setReconnectEnergyGate(const bool &_val);
+
+        /**
+         * @brief Get whether stock non-RNR quality operations are enabled
+         */
+        bool getStockQualityOps() const { return stockQualityOps; };
+
+        /**
+         * @brief Set whether stock non-RNR quality operations are enabled
+         *
+         * When false, doQuality() skips the legacy vertex/surface/body/collision passes and
+         * runs only the native reconnection pass (if reconnectLength > 0).
+         *
+         * @param _val flag
+         */
+        HRESULT setStockQualityOps(const bool &_val);
 
         /**
          * @brief Diagnostic (read-only): analyze the I->H reconnection neighborhood of the

@@ -55,6 +55,15 @@
 
         @quality.setter
         def quality(self, _quality):
+            # Mesh::setQuality (tfMesh.cpp) TAKES OWNERSHIP: it deletes the previous quality and
+            # will delete this pointer on the next assignment / on `mesh.quality = None` / on mesh
+            # destruction. So the C++ Mesh must be the SOLE owner -- otherwise the SWIG proxy ALSO
+            # frees it when Python GCs it, double-freeing in ~MeshQuality (abort:
+            # POINTER_BEING_FREED_WAS_NOT_ALLOCATED). Relinquish Python ownership on transfer.
+            # Surfaced by the native-RNR Phase-D doQuality tests, which attach a Python-created
+            # Quality (`mesh.quality = tfv.Quality()`) then drop it; latent in stock TF too.
+            if _quality is not None:
+                _quality.thisown = 0
             self.setQuality(_quality)
 
         @property

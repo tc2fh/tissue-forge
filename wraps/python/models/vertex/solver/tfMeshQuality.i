@@ -106,6 +106,17 @@
         def reconnect_energy_gate(self, _val: bool):
             self.setReconnectEnergyGate(_val)
 
+        @property
+        def stock_quality_operations(self) -> bool:
+            """Whether the legacy non-RNR MeshQuality operations are enabled. Set False to run
+            native reconnection in isolation through do_quality(). Default True preserves stock
+            TissueForge behavior."""
+            return self.getStockQualityOps()
+
+        @stock_quality_operations.setter
+        def stock_quality_operations(self, _val: bool):
+            self.setStockQualityOps(_val)
+
         def analyze_i_reconnection(self, v10_id: int, v11_id: int) -> dict:
             """Diagnostic (read-only): the native I->H neighborhood walk + Condition-4 veto for
             the short edge (v10_id, v11_id) on the current mesh -- the C++ port of
