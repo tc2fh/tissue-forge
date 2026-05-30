@@ -399,6 +399,33 @@ namespace TissueForge::models::vertex {
         HRESULT setReconnectEnergyGate(const bool &_val);
 
         /**
+         * @brief Diagnostic (read-only): analyze the I->H reconnection neighborhood of the
+         *        short edge (v10Id, v11Id) on the current mesh.
+         *
+         * The native port of rnr/topology.py i_neighbourhood + rnr/conditions.py i_to_h_veto.
+         * Returns a JSON object string {valid, kind, v10_id, v11_id, cap_top_id, cap_bot_id,
+         * side_cell_ids, length, legal, veto_reason}. A debug entry point used by the Phase-B
+         * gate test to cross-check the native walk + Condition-4 vetoes against the validated
+         * Python prototype (the oracle). Does not mutate the mesh.
+         */
+        std::string analyzeIReconnection(const unsigned int &v10Id, const unsigned int &v11Id) const;
+
+        /**
+         * @brief Diagnostic (read-only): analyze the H->I reconnection neighborhood of the
+         *        triangular surface triId on the current mesh (port of h_neighbourhood +
+         *        h_to_i_veto). Returns a JSON object string; does not mutate the mesh.
+         */
+        std::string analyzeHReconnection(const unsigned int &triId) const;
+
+        /**
+         * @brief Diagnostic (read-only): JSON array of every reconnection candidate the native
+         *        scan finds at the current reconnectLength (Okuda Condition 2) -- both I->H short
+         *        edges and H->I small triangles -- each tagged legal + veto_reason. Returns "[]"
+         *        when reconnectLength <= 0. Same scanners doQuality uses; does not mutate the mesh.
+         */
+        std::string findReconnectionCandidates() const;
+
+        /**
          * @brief Get whether 2D collisions are implemented
          *
          * @return true if 2D collisions are implemented

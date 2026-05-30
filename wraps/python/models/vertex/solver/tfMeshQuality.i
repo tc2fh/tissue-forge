@@ -106,6 +106,33 @@
         def reconnect_energy_gate(self, _val: bool):
             self.setReconnectEnergyGate(_val)
 
+        def analyze_i_reconnection(self, v10_id: int, v11_id: int) -> dict:
+            """Diagnostic (read-only): the native I->H neighborhood walk + Condition-4 veto for
+            the short edge (v10_id, v11_id) on the current mesh -- the C++ port of
+            topology.i_neighbourhood + conditions.i_to_h_veto. Returns a dict: keys `valid`
+            (bool) and, when valid, `kind` ('I'), `v10_id`, `v11_id`, `triangle_id` (-1),
+            `trigger_surface_id`, `cap_top_id`, `cap_bot_id`, `side_cell_ids` (list), `length`,
+            `legal` (bool), `veto_reason` (str, '' if legal). For cross-checking against the
+            Python prototype (Phase-B gate); does not mutate the mesh."""
+            import json
+            return json.loads(self.analyzeIReconnection(v10_id, v11_id))
+
+        def analyze_h_reconnection(self, triangle_id: int) -> dict:
+            """Diagnostic (read-only): the native H->I neighborhood walk + Condition-4 veto for
+            the triangular surface `triangle_id` (port of h_neighbourhood + h_to_i_veto). Returns
+            a dict like analyze_i_reconnection but with `kind` ('H'), `triangle_id`, and `length`
+            = the triangle's max edge. Does not mutate the mesh."""
+            import json
+            return json.loads(self.analyzeHReconnection(triangle_id))
+
+        def find_reconnection_candidates(self) -> list:
+            """Diagnostic (read-only): every reconnection candidate the native scan finds at the
+            current `reconnect_length` (Okuda Condition 2) -- both I->H short edges and H->I small
+            triangles -- each as a dict tagged `legal` + `veto_reason`. Empty list when
+            reconnect_length <= 0. Same scanners doQuality uses; does not mutate the mesh."""
+            import json
+            return json.loads(self.findReconnectionCandidates())
+
         @property
         def collision_2d(self) -> bool:
             """Whether 2D collisions are implemented"""
