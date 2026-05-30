@@ -426,6 +426,26 @@ namespace TissueForge::models::vertex {
         std::string findReconnectionCandidates() const;
 
         /**
+         * @brief Debug/test entry point: force one native I->H reconnection on the current
+         *        mesh, bypassing the scan and stock quality passes.
+         *
+         * Uses reconnectLength as Okuda Delta_l_th for vertex placement. Returns a JSON
+         * object string {ok, reason, new_surface_id, new_vertex_ids}. Intended for the
+         * Phase-C native round-trip gate; does not run the broader doQuality pipeline.
+         */
+        std::string forceReconnectIToH(const unsigned int &v10Id, const unsigned int &v11Id) const;
+
+        /**
+         * @brief Debug/test entry point: force one native H->I reconnection on the current
+         *        mesh, bypassing the scan and stock quality passes.
+         *
+         * Uses reconnectLength as Okuda Delta_l_th for vertex placement. Returns a JSON
+         * object string {ok, reason, new_surface_id, new_vertex_ids}. Intended for the
+         * Phase-C native round-trip gate; does not run the broader doQuality pipeline.
+         */
+        std::string forceReconnectHToI(const unsigned int &triId) const;
+
+        /**
          * @brief Get whether 2D collisions are implemented
          *
          * @return true if 2D collisions are implemented

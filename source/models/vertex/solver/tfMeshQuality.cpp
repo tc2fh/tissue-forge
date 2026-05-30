@@ -37,10 +37,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <array>
 #include <map>
 #include <sstream>
 #include <string>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 
 
 using namespace TissueForge;
@@ -995,6 +998,186 @@ static std::string rnr_hConfigJson(const RNR_HConfig &cfg, const std::string &ve
     return ss.str();
 }
 
+static std::string rnr_reconnectResultJson(
+    bool ok,
+    const std::string &reason,
+    int newSurfaceId,
+    const std::vector<int> &newVertexIds
+) {
+    std::stringstream ss;
+    ss << "{\"ok\": " << (ok ? "true" : "false")
+       << ", \"reason\": \"" << rnr_jsonEscape(reason) << "\""
+       << ", \"new_surface_id\": " << newSurfaceId
+       << ", \"new_vertex_ids\": " << rnr_jsonIntArray(newVertexIds)
+       << "}";
+    return ss.str();
+}
+
+// --- Phase-C placement math (Okuda 2013 Appendix 1); mirrors reconnect.py ----
+
+static FVector3 rnr_unit(const FVector3 &v) {
+    return v.isZero() ? v : v.normalized();
+}
+
+/** I->H vertex placement, Okuda Eqs. 46-56. */
+static bool rnr_placeIToH(const RNR_IConfig &cfg, const FloatP_t &dlTh, std::array<FVector3, 3> &out) {
+    if(cfg.arms.size() != 3) return false;
+
+    const FVector3 p10 = cfg.v10->getPosition();
+    const FVector3 p11 = cfg.v11->getPosition();
+    const FVector3 r0 = (p10 + p11) * 0.5;                 // Eq. 50: edge midpoint
+    const FVector3 uT = rnr_unit(p10 - p11);               // Eq. 49: edge axis
+    if(uT.isZero()) return false;
+
+    std::array<FVector3, 3> vproj;
+    for(size_t i = 0; i < cfg.arms.size(); i++) {
+        const RNR_Arm &a = cfg.arms[i];
+        const FVector3 dTop = rnr_unit(a.outerTop->getPosition() - r0);
+        const FVector3 dBot = rnr_unit(a.outerBot->getPosition() - r0);
+        const FVector3 w = (dTop + dBot) * 0.5;            // Eqs. 54-56
+        vproj[i] = w - uT * w.dot(uT);                    // Eqs. 51-53: project off edge
+    }
+
+    FloatP_t lMax = 0;
+    for(size_t i = 0; i < vproj.size(); i++)
+        for(size_t j = i + 1; j < vproj.size(); j++)
+            lMax = std::max(lMax, (vproj[i] - vproj[j]).length());
+    if(lMax == 0) lMax = 1;
+
+    for(size_t i = 0; i < vproj.size(); i++)
+        out[i] = r0 + vproj[i] * (dlTh / lMax);            // Eqs. 46-48
+    return true;
+}
+
+/** H->I vertex placement, Okuda Eqs. 42-45. */
+static bool rnr_placeHToI(const RNR_HConfig &cfg, const FloatP_t &dlTh, FVector3 &p10, FVector3 &p11) {
+    if(cfg.arms.size() != 3) return false;
+
+    std::array<FVector3, 3> p = {
+        cfg.arms[0].triVertex->getPosition(),
+        cfg.arms[1].triVertex->getPosition(),
+        cfg.arms[2].triVertex->getPosition()
+    };
+    const FVector3 r0 = (p[0] + p[1] + p[2]) / 3.0;        // Eq. 45: triangle centroid
+    FVector3 n = rnr_unit(Magnum::Math::cross(p[1] - p[0], p[2] - p[0])); // Eq. 44
+    if(n.isZero()) return false;
+
+    FVector3 topMean(0);
+    for(auto &a : cfg.arms)
+        topMean += a.outerTop->getPosition();
+    topMean /= (FloatP_t)cfg.arms.size();
+    if((topMean - r0).dot(n) < 0)
+        n = n * -1;
+
+    const FloatP_t half = 0.5 * dlTh;
+    p10 = r0 + n * half;                                   // Eq. 42
+    p11 = r0 - n * half;                                   // Eq. 43
+    return true;
+}
+
+// --- low-level manual surgery (maintain both sides of every adjacency) -------
+
+static bool rnr_vertexHasSurface(Vertex *v, Surface *s) {
+    if(!v || !s) return false;
+    for(auto *vs : v->getSurfaces())
+        if(vs && vs->objectId() == s->objectId())
+            return true;
+    return false;
+}
+
+static bool rnr_surfaceHasBody(Surface *s, Body *b) {
+    if(!s || !b) return false;
+    for(auto *sb : s->getBodies())
+        if(sb && sb->objectId() == b->objectId())
+            return true;
+    return false;
+}
+
+static bool rnr_bodyHasSurface(Body *b, Surface *s) {
+    if(!b || !s) return false;
+    for(auto *bs : b->getSurfaces())
+        if(bs && bs->objectId() == s->objectId())
+            return true;
+    return false;
+}
+
+static HRESULT rnr_replaceV(Surface *s, Vertex *oldV, Vertex *newV) {
+    if(!s || !oldV || !newV) return E_FAIL;
+    s->replace(newV, oldV);                 // TF edits only the surface ring here.
+    if(!rnr_vertexHasSurface(newV, s)) newV->add(s);
+    if(rnr_vertexHasSurface(oldV, s)) oldV->remove(s);
+    return S_OK;
+}
+
+static HRESULT rnr_insertBetween(Surface *s, Vertex *newV, Vertex *v1, Vertex *v2) {
+    if(!s || !newV || !v1 || !v2) return E_FAIL;
+    if(s->insert(newV, v1, v2) != S_OK) return E_FAIL;
+    if(!rnr_vertexHasSurface(newV, s)) newV->add(s);
+    return S_OK;
+}
+
+static HRESULT rnr_dropV(Surface *s, Vertex *v) {
+    if(!s || !v) return E_FAIL;
+    if(s->remove(v) != S_OK) return E_FAIL;
+    if(rnr_vertexHasSurface(v, s)) v->remove(s);
+    return S_OK;
+}
+
+static HRESULT rnr_attachBody(Surface *s, Body *b) {
+    if(!s || !b) return E_FAIL;
+    if(!rnr_surfaceHasBody(s, b) && s->add(b) != S_OK) return E_FAIL;
+    if(!rnr_bodyHasSurface(b, s) && b->add(s) != S_OK) return E_FAIL;
+    return S_OK;
+}
+
+static HRESULT rnr_detachBody(Surface *s, Body *b) {
+    if(!s || !b) return E_FAIL;
+    if(rnr_surfaceHasBody(s, b) && s->remove(b) != S_OK) return E_FAIL;
+    if(rnr_bodyHasSurface(b, s) && b->remove(s) != S_OK) return E_FAIL;
+    return S_OK;
+}
+
+static void rnr_refreshAfterSurgery(const std::vector<Surface*> &surfaces, const std::vector<Body*> &extraBodies) {
+    std::unordered_set<int> seenSurfaces;
+    std::vector<Surface*> liveSurfaces;
+    liveSurfaces.reserve(surfaces.size());
+    for(auto *s : surfaces) {
+        if(!s || s->objectId() < 0 || seenSurfaces.count(s->objectId())) continue;
+        seenSurfaces.insert(s->objectId());
+        liveSurfaces.push_back(s);
+        s->positionChanged();
+    }
+    for(auto *s : liveSurfaces)
+        s->refreshBodies();
+
+    std::unordered_set<int> seenBodies;
+    std::vector<Body*> liveBodies;
+    for(auto *b : extraBodies) {
+        if(!b || b->objectId() < 0 || seenBodies.count(b->objectId())) continue;
+        seenBodies.insert(b->objectId());
+        liveBodies.push_back(b);
+    }
+    for(auto *s : liveSurfaces)
+        for(auto *b : s->getBodies()) {
+            if(!b || b->objectId() < 0 || seenBodies.count(b->objectId())) continue;
+            seenBodies.insert(b->objectId());
+            liveBodies.push_back(b);
+        }
+    for(auto *b : liveBodies)
+        b->positionChanged();
+
+    std::unordered_set<int> seenVertices;
+    std::vector<Vertex*> liveVertices;
+    for(auto *s : liveSurfaces)
+        for(auto *v : s->getVertices()) {
+            if(!v || v->objectId() < 0 || seenVertices.count(v->objectId())) continue;
+            seenVertices.insert(v->objectId());
+            liveVertices.push_back(v);
+        }
+    for(auto *v : liveVertices)
+        v->updateConnectedVertices();
+}
+
 } // anonymous namespace
 
 
@@ -1019,6 +1202,10 @@ struct ReconnectionOperation : MeshQualityOperation {
     FloatP_t hysteresis;       // placement hysteresis (Phase C)
     bool energyGate;           // optional greedy gate (Phase C+); OFF by default
     std::unordered_set<int> affectedChildren;
+    bool lastOk = false;
+    std::string lastReason;
+    int lastNewSurfaceId = -1;
+    std::vector<int> lastNewVertexIds;
 
     /** I->H: short edge (cfg.v10, cfg.v11) -> triangular face. */
     ReconnectionOperation(Mesh *_mesh, const RNR_IConfig &cfg,
@@ -1077,14 +1264,257 @@ struct ReconnectionOperation : MeshQualityOperation {
             if(v11) for(auto *b : v11->getBodies()) affectedChildren.insert(b->objectId());
         } else {
             Surface *tri = mesh->getSurface(triId);
-            if(tri) for(auto *b : tri->getBodies()) affectedChildren.insert(b->objectId());
+            RNR_HConfig cfg;
+            if(tri && rnr_hNeighbourhood(tri, cfg)) {
+                affectedChildren.insert(cfg.capTopId);
+                affectedChildren.insert(cfg.capBotId);
+                for(int id : cfg.sideCellIds) affectedChildren.insert(id);
+            }
+            else if(tri) for(auto *b : tri->getBodies()) affectedChildren.insert(b->objectId());
         }
     }
 
-    // Phase C fills these in. Phase B allocates nothing and mutates nothing.
-    size_t numNewVertices() const override { return 0; }
-    size_t numNewSurfaces() const override { return 0; }
-    std::vector<int> implement() override { return {}; }
+    size_t numNewVertices() const override { return kind == I2H ? 3 : 2; }
+    size_t numNewSurfaces() const override { return kind == I2H ? 1 : 0; }
+
+    FloatP_t placementLength() const { return dlTh * (1 + hysteresis); }
+
+    std::vector<int> fail(const std::string &reason) {
+        lastOk = false;
+        lastReason = reason;
+        lastNewSurfaceId = -1;
+        lastNewVertexIds.clear();
+        return {};
+    }
+
+    std::vector<int> implementIToH() {
+        Vertex *v10 = mesh->getVertex(v10Id);
+        Vertex *v11 = mesh->getVertex(v11Id);
+        if(!v10 || !v11) return fail("missing vertex");
+
+        RNR_IConfig cfg;
+        if(!rnr_iNeighbourhood(v10, v11, cfg)) return fail("no valid I-configuration");
+        std::string veto = rnr_iToHVeto(cfg);
+        if(!veto.empty()) return fail(veto);
+
+        const FloatP_t placeDl = placementLength();
+        if(placeDl <= 0) return fail("reconnectLength must be > 0");
+
+        std::array<FVector3, 3> positions;
+        if(!rnr_placeIToH(cfg, placeDl, positions)) return fail("I->H placement failed");
+
+        SurfaceType *stype = cfg.arms[0].sideSurface->type();
+        if(!stype) return fail("trigger surface has no SurfaceType");
+
+        std::unordered_map<int, size_t> armByOuterTop, armByOuterBot;
+        for(size_t i = 0; i < cfg.arms.size(); i++) {
+            armByOuterTop[cfg.arms[i].outerTop->objectId()] = i;
+            armByOuterBot[cfg.arms[i].outerBot->objectId()] = i;
+        }
+
+        // Preflight the ordered face edits before mutating; these mirror reconnect.py.
+        for(auto &kv : cfg.topFaces) {
+            Vertex *nextV, *prevV;
+            std::tie(nextV, prevV) = kv.second->neighborVertices(cfg.v10);
+            if(!prevV || !nextV || !armByOuterTop.count(prevV->objectId()) || !armByOuterTop.count(nextV->objectId()))
+                return fail("top face ring-neighbours of v10 are not arm outer_top verts");
+        }
+        for(auto &kv : cfg.bottomFaces) {
+            Vertex *nextV, *prevV;
+            std::tie(nextV, prevV) = kv.second->neighborVertices(cfg.v11);
+            if(!prevV || !nextV || !armByOuterBot.count(prevV->objectId()) || !armByOuterBot.count(nextV->objectId()))
+                return fail("bottom face ring-neighbours of v11 are not arm outer_bot verts");
+        }
+
+        MeshSolver::engineLock();
+
+        std::array<Vertex*, 3> tri = {nullptr, nullptr, nullptr};
+        std::vector<Vertex*> created;
+        for(size_t i = 0; i < positions.size(); i++) {
+            VertexHandle vh = Vertex::create(positions[i]);
+            tri[i] = vh ? vh.vertex() : nullptr;
+            if(!tri[i]) {
+                for(auto *v : created) v->destroy();
+                MeshSolver::engineUnlock();
+                return fail("failed to create triangle vertex");
+            }
+            created.push_back(tri[i]);
+        }
+
+        SurfaceHandle tHandle = (*stype)({
+            VertexHandle(tri[0]->objectId()),
+            VertexHandle(tri[1]->objectId()),
+            VertexHandle(tri[2]->objectId())
+        });
+        Surface *T = tHandle ? tHandle.surface() : nullptr;
+        if(!T) {
+            for(auto *v : created) v->destroy();
+            MeshSolver::engineUnlock();
+            return fail("failed to create triangle surface");
+        }
+
+        std::vector<Surface*> touchedSurfs;
+        touchedSurfs.reserve(10);
+
+        // (1) SIDE faces: [outer_top, v10, v11, outer_bot] -> [outer_top, vt_k, outer_bot].
+        for(size_t i = 0; i < cfg.arms.size(); i++) {
+            Surface *s = cfg.arms[i].sideSurface;
+            rnr_replaceV(s, cfg.v10, tri[i]);
+            rnr_dropV(s, cfg.v11);
+            touchedSurfs.push_back(s);
+        }
+
+        // (2) TOP faces: v10 -> triangle edge (vt_prev, vt_next).
+        for(auto &kv : cfg.topFaces) {
+            Surface *face = kv.second;
+            Vertex *nextV, *prevV;
+            std::tie(nextV, prevV) = face->neighborVertices(cfg.v10);
+            Vertex *vtPrev = tri[armByOuterTop[prevV->objectId()]];
+            Vertex *vtNext = tri[armByOuterTop[nextV->objectId()]];
+            rnr_replaceV(face, cfg.v10, vtPrev);
+            rnr_insertBetween(face, vtNext, vtPrev, nextV);
+            touchedSurfs.push_back(face);
+        }
+
+        // (3) BOTTOM faces: v11 -> triangle edge, mirror of top.
+        for(auto &kv : cfg.bottomFaces) {
+            Surface *face = kv.second;
+            Vertex *nextV, *prevV;
+            std::tie(nextV, prevV) = face->neighborVertices(cfg.v11);
+            Vertex *vtPrev = tri[armByOuterBot[prevV->objectId()]];
+            Vertex *vtNext = tri[armByOuterBot[nextV->objectId()]];
+            rnr_replaceV(face, cfg.v11, vtPrev);
+            rnr_insertBetween(face, vtNext, vtPrev, nextV);
+            touchedSurfs.push_back(face);
+        }
+
+        // (4) New triangular cap-cap contact.
+        rnr_attachBody(T, cfg.capTop);
+        rnr_attachBody(T, cfg.capBot);
+        touchedSurfs.push_back(T);
+
+        lastNewSurfaceId = T->objectId();
+        lastNewVertexIds = {tri[0]->objectId(), tri[1]->objectId(), tri[2]->objectId()};
+
+        // (5) Destroy the now-orphaned short-edge vertices, after all rewiring is done.
+        cfg.v10->destroy();
+        cfg.v11->destroy();
+
+        rnr_refreshAfterSurgery(touchedSurfs, {cfg.capTop, cfg.capBot});
+
+        MeshSolver::engineUnlock();
+
+        lastOk = true;
+        lastReason = "";
+        next.clear();
+        return std::vector<int>(affectedChildren.begin(), affectedChildren.end());
+    }
+
+    std::vector<int> implementHToI() {
+        Surface *triSurf = mesh->getSurface(triId);
+        if(!triSurf) return fail("missing triangle surface");
+
+        RNR_HConfig cfg;
+        if(!rnr_hNeighbourhood(triSurf, cfg)) return fail("no valid H-configuration");
+        std::string veto = rnr_hToIVeto(cfg);
+        if(!veto.empty()) return fail(veto);
+
+        const FloatP_t placeDl = placementLength();
+        if(placeDl <= 0) return fail("reconnectLength must be > 0");
+
+        FVector3 p10, p11;
+        if(!rnr_placeHToI(cfg, placeDl, p10, p11)) return fail("H->I placement failed");
+
+        const std::set<int> triIds(cfg.triVertexIds.begin(), cfg.triVertexIds.end());
+        for(auto &kv : cfg.topFaces) {
+            int n = 0;
+            for(auto *v : kv.second->getVertices()) if(triIds.count(v->objectId())) n++;
+            if(n != 2) return fail("top face expected 2 triangle vertices");
+        }
+        for(auto &kv : cfg.bottomFaces) {
+            int n = 0;
+            for(auto *v : kv.second->getVertices()) if(triIds.count(v->objectId())) n++;
+            if(n != 2) return fail("bottom face expected 2 triangle vertices");
+        }
+
+        MeshSolver::engineLock();
+
+        VertexHandle nv10Handle = Vertex::create(p10);
+        VertexHandle nv11Handle = Vertex::create(p11);
+        Vertex *nv10 = nv10Handle ? nv10Handle.vertex() : nullptr;
+        Vertex *nv11 = nv11Handle ? nv11Handle.vertex() : nullptr;
+        if(!nv10 || !nv11) {
+            if(nv10) nv10->destroy();
+            if(nv11) nv11->destroy();
+            MeshSolver::engineUnlock();
+            return fail("failed to create recovered edge vertices");
+        }
+
+        std::vector<Surface*> touchedSurfs;
+        touchedSurfs.reserve(9);
+
+        // (1) SIDE faces: [outer_top, vt_k, outer_bot] -> [outer_top, nv10, nv11, outer_bot].
+        for(auto &a : cfg.arms) {
+            Surface *s = a.sideSurface;
+            rnr_replaceV(s, a.triVertex, nv10);
+            rnr_insertBetween(s, nv11, nv10, a.outerBot);
+            touchedSurfs.push_back(s);
+        }
+
+        // (2) TOP faces: triangle edge -> nv10.
+        for(auto &kv : cfg.topFaces) {
+            Surface *face = kv.second;
+            std::vector<Vertex*> present;
+            for(auto *v : face->getVertices()) if(triIds.count(v->objectId())) present.push_back(v);
+            rnr_replaceV(face, present[0], nv10);
+            rnr_dropV(face, present[1]);
+            touchedSurfs.push_back(face);
+        }
+
+        // (3) BOTTOM faces: triangle edge -> nv11.
+        for(auto &kv : cfg.bottomFaces) {
+            Surface *face = kv.second;
+            std::vector<Vertex*> present;
+            for(auto *v : face->getVertices()) if(triIds.count(v->objectId())) present.push_back(v);
+            rnr_replaceV(face, present[0], nv11);
+            rnr_dropV(face, present[1]);
+            touchedSurfs.push_back(face);
+        }
+
+        std::vector<int> oldTriVertexIds = cfg.triVertexIds;
+        Surface *T = cfg.triangle;
+        rnr_detachBody(T, cfg.capTop);
+        rnr_detachBody(T, cfg.capBot);
+        T->destroy();
+
+        // SurfaceHandle::destroy/member Surface::destroy does not cascade-delete orphan
+        // vertices; explicitly remove the three now-orphaned triangle vertices.
+        for(int id : oldTriVertexIds) {
+            Vertex *v = mesh->getVertex(id);
+            if(v && v->getSurfaces().empty())
+                v->destroy();
+        }
+
+        lastNewSurfaceId = -1;
+        lastNewVertexIds = {nv10->objectId(), nv11->objectId()};
+
+        rnr_refreshAfterSurgery(touchedSurfs, {cfg.capTop, cfg.capBot});
+
+        MeshSolver::engineUnlock();
+
+        lastOk = true;
+        lastReason = "";
+        next.clear();
+        return std::vector<int>(affectedChildren.begin(), affectedChildren.end());
+    }
+
+    std::vector<int> implement() override {
+        lastOk = false;
+        lastReason = "";
+        lastNewSurfaceId = -1;
+        lastNewVertexIds.clear();
+        return kind == I2H ? implementIToH() : implementHToI();
+    }
 };
 
 
@@ -1686,6 +2116,65 @@ std::string MeshQuality::findReconnectionCandidates() const {
     }
     ss << "]";
     return ss.str();
+}
+
+std::string MeshQuality::forceReconnectIToH(const unsigned int &v10Id, const unsigned int &v11Id) const {
+    Mesh *mesh = Mesh::get();
+    if(!mesh) return rnr_reconnectResultJson(false, "no mesh", -1, {});
+    if(reconnectLength <= 0) return rnr_reconnectResultJson(false, "reconnectLength must be > 0", -1, {});
+
+    Vertex *v10 = mesh->getVertex(v10Id);
+    Vertex *v11 = mesh->getVertex(v11Id);
+    if(!v10 || !v11) return rnr_reconnectResultJson(false, "missing vertex", -1, {});
+
+    RNR_IConfig cfg;
+    if(!rnr_iNeighbourhood(v10, v11, cfg))
+        return rnr_reconnectResultJson(false, "no valid I-configuration", -1, {});
+    std::string veto = rnr_iToHVeto(cfg);
+    if(!veto.empty())
+        return rnr_reconnectResultJson(false, veto, -1, {});
+
+    ReconnectionOperation op(mesh, cfg, reconnectLength, reconnectHysteresis, reconnectEnergyGate);
+    op.prep();
+    if(!op.check())
+        return rnr_reconnectResultJson(false, "operation no longer valid", -1, {});
+
+    if(mesh->ensureAvailableVertices(op.numNewVertices()) != S_OK ||
+       mesh->ensureAvailableSurfaces(op.numNewSurfaces()) != S_OK ||
+       mesh->ensureAvailableBodies(op.numNewBodies()) != S_OK)
+        return rnr_reconnectResultJson(false, "failed to reserve mesh storage", -1, {});
+
+    op.implement();
+    return rnr_reconnectResultJson(op.lastOk, op.lastReason, op.lastNewSurfaceId, op.lastNewVertexIds);
+}
+
+std::string MeshQuality::forceReconnectHToI(const unsigned int &triId) const {
+    Mesh *mesh = Mesh::get();
+    if(!mesh) return rnr_reconnectResultJson(false, "no mesh", -1, {});
+    if(reconnectLength <= 0) return rnr_reconnectResultJson(false, "reconnectLength must be > 0", -1, {});
+
+    Surface *tri = mesh->getSurface(triId);
+    if(!tri) return rnr_reconnectResultJson(false, "missing triangle surface", -1, {});
+
+    RNR_HConfig cfg;
+    if(!rnr_hNeighbourhood(tri, cfg))
+        return rnr_reconnectResultJson(false, "no valid H-configuration", -1, {});
+    std::string veto = rnr_hToIVeto(cfg);
+    if(!veto.empty())
+        return rnr_reconnectResultJson(false, veto, -1, {});
+
+    ReconnectionOperation op(mesh, cfg, reconnectLength, reconnectHysteresis, reconnectEnergyGate);
+    op.prep();
+    if(!op.check())
+        return rnr_reconnectResultJson(false, "operation no longer valid", -1, {});
+
+    if(mesh->ensureAvailableVertices(op.numNewVertices()) != S_OK ||
+       mesh->ensureAvailableSurfaces(op.numNewSurfaces()) != S_OK ||
+       mesh->ensureAvailableBodies(op.numNewBodies()) != S_OK)
+        return rnr_reconnectResultJson(false, "failed to reserve mesh storage", -1, {});
+
+    op.implement();
+    return rnr_reconnectResultJson(op.lastOk, op.lastReason, op.lastNewSurfaceId, op.lastNewVertexIds);
 }
 
 HRESULT MeshQuality::setCollision2D(const bool &_collision2D) {

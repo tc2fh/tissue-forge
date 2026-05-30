@@ -133,6 +133,20 @@
             import json
             return json.loads(self.findReconnectionCandidates())
 
+        def force_reconnect_i_to_h(self, v10_id: int, v11_id: int) -> dict:
+            """Debug/test mutate entry point: force one native I->H reconnection on the current
+            mesh, using `reconnect_length` as Okuda Delta_l_th. Bypasses the scan and stock
+            quality passes; returns `{ok, reason, new_surface_id, new_vertex_ids}`."""
+            import json
+            return json.loads(self.forceReconnectIToH(v10_id, v11_id))
+
+        def force_reconnect_h_to_i(self, triangle_id: int) -> dict:
+            """Debug/test mutate entry point: force one native H->I reconnection on the current
+            mesh, using `reconnect_length` as Okuda Delta_l_th. Bypasses the scan and stock
+            quality passes; returns `{ok, reason, new_surface_id, new_vertex_ids}`."""
+            import json
+            return json.loads(self.forceReconnectHToI(triangle_id))
+
         @property
         def collision_2d(self) -> bool:
             """Whether 2D collisions are implemented"""
