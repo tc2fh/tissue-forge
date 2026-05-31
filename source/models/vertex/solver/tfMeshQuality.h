@@ -273,12 +273,29 @@ namespace TissueForge::models::vertex {
         bool stockQualityOps;
 
         /**
+         * Reconnection throttle interval (the 3DVertVor oracle's dtr, in doQuality calls).
+         *
+         * The native reconnection pass runs only on every reconnectInterval-th doQuality() call
+         * (i.e. every reconnectInterval-th integration step). 1 = every step (the original
+         * behavior). Larger values give the mesh time to relax between reconnections, which breaks
+         * the post-reconnection overshoot storm (the 3DVertVor oracle reconnects every dtr = 10*dt
+         * rather than every step; see rnr/PORTING_NOTES.md sections 6c/6d). Trade-off: a larger
+         * interval is more stable but reconnects (and therefore sorts) more slowly. Values < 1 are
+         * treated as 1.
+         */
+        unsigned int reconnectInterval;
+
+        /**
          * Flag for whether doing 2D collisions
          */
         bool collision2D;
 
         /** Flag for whether currently doing work */
         bool _working;
+
+        /** doQuality() call counter; gates the reconnection pass by reconnectInterval (transient,
+         * not serialized). */
+        unsigned int reconnectCounter;
 
         std::unordered_set<unsigned int> excludedVertices;
 
@@ -423,6 +440,22 @@ namespace TissueForge::models::vertex {
          * @param _val flag
          */
         HRESULT setStockQualityOps(const bool &_val);
+
+        /**
+         * @brief Get the reconnection throttle interval (doQuality calls between reconnection passes)
+         */
+        unsigned int getReconnectInterval() const { return reconnectInterval; };
+
+        /**
+         * @brief Set the reconnection throttle interval (the oracle's dtr, in doQuality calls)
+         *
+         * The reconnection pass runs only every _val-th doQuality() call; larger values relax the
+         * mesh between reconnections and break the post-reconnection overshoot storm. Values < 1
+         * are treated as 1 (run every step).
+         *
+         * @param _val interval (>= 1)
+         */
+        HRESULT setReconnectInterval(const unsigned int &_val);
 
         /**
          * @brief Diagnostic (read-only): analyze the I->H reconnection neighborhood of the

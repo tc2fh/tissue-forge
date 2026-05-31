@@ -117,6 +117,18 @@
         def stock_quality_operations(self, _val: bool):
             self.setStockQualityOps(_val)
 
+        @property
+        def reconnect_interval(self) -> int:
+            """Reconnection throttle: the native reconnection pass runs only every
+            reconnect_interval-th do_quality() call (the 3DVertVor oracle's dtr; oracle reconnects
+            every 10*dt). Larger = more stable but slower sorting; 1 = every step (default). Values
+            < 1 are treated as 1."""
+            return self.getReconnectInterval()
+
+        @reconnect_interval.setter
+        def reconnect_interval(self, _val: int):
+            self.setReconnectInterval(_val)
+
         def analyze_i_reconnection(self, v10_id: int, v11_id: int) -> dict:
             """Diagnostic (read-only): the native I->H neighborhood walk + Condition-4 veto for
             the short edge (v10_id, v11_id) on the current mesh -- the C++ port of

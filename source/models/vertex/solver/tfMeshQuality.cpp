@@ -1898,6 +1898,46 @@ static HRESULT MeshQuality_doOperations(
     return S_OK;
 }
 
+// Serial executor for the reconnection pass.
+//
+// MeshQuality_doOperations (above) runs the head operations' implement() walks IN PARALLEL
+// (parallel_for over op_heads). The dependency graph only serializes ops whose `targets` overlap,
+// and a ReconnectionOperation's `targets` are just its 9 incident SURFACES -- NOT the 6 outer
+// vertices or 5 bodies its I<->H surgery also mutates. So two reconnections with disjoint surface
+// targets but a shared outer vertex/body can implement() concurrently and race on that shared
+// (non-target) object, corrupting its surface/body lists -> intermittent heap corruption / segfault
+// (seen ~once per dozen full gate runs; volumes were perfectly stable right up to the crash, so it
+// is a scheduler race, not the dynamics). Widening `targets` to vertices/bodies would change the
+// validated walk; instead we run THIS pass serially. It is throttled (reconnectInterval) and sparse
+// (a handful of ops per call), so serial cost is negligible. This extends the same serialization
+// rationale MeshQuality_constructOperationsReconnection already uses for chain construction.
+static HRESULT MeshQuality_doOperationsReconnectionSerial(
+    Mesh *mesh,
+    std::vector<MeshQualityOperation*> &op_active,
+    std::vector<MeshQualityOperation*> &op_heads,
+    std::vector<int> &affectedChildren)
+{
+    size_t numNewVertices = 0, numNewSurfaces = 0, numNewBodies = 0;
+    for(auto op : op_active) {
+        numNewVertices += op->numNewVertices();
+        numNewSurfaces += op->numNewSurfaces();
+        numNewBodies += op->numNewBodies();
+    }
+    mesh->ensureAvailableVertices(numNewVertices);
+    mesh->ensureAvailableSurfaces(numNewSurfaces);
+    mesh->ensureAvailableBodies(numNewBodies);
+
+    for(auto op : op_active)
+        op->prep();
+
+    std::unordered_set<int> affectedChildrenSet;
+    for(auto head : op_heads)
+        MeshQuality_doOperations(head, affectedChildrenSet);   // single-op recursive walk, serial
+    affectedChildren = std::vector<int>(affectedChildrenSet.begin(), affectedChildrenSet.end());
+
+    return S_OK;
+}
+
 static HRESULT MeshQuality_clearOperations(std::vector<MeshQualityOperation*> &ops) {
     auto func = [&ops](int i) -> void {
         delete ops[i];
@@ -1919,8 +1959,10 @@ MeshQuality::MeshQuality(
     reconnectHysteresis{0.0},
     reconnectEnergyGate{false},
     stockQualityOps{true},
+    reconnectInterval{1},
+    collision2D{true},
     _working{false},
-    collision2D{true}
+    reconnectCounter{0}
 {
     FloatP_t uvolu = Universe::dim().product();
     FloatP_t uleng = std::cbrt(uvolu);
@@ -1946,6 +1988,7 @@ std::string MeshQuality::str() const {
     ss << "reconnectHysteresis="<< this->reconnectHysteresis            << ", ";
     ss << "reconnectEnergyGate="<< (this->reconnectEnergyGate ? "yes" : "no") << ", ";
     ss << "stockQualityOps="    << (this->stockQualityOps ? "yes" : "no") << ", ";
+    ss << "reconnectInterval="  << this->reconnectInterval              << ", ";
     ss << "collision2D="        << (this->collision2D ? "yes" : "no")   << ", ";
     ss << "working="            << (this->_working    ? "yes" : "no");
     ss << ")";
@@ -2025,16 +2068,27 @@ HRESULT MeshQuality::doQuality() {
     // Reconnection checks (native 3D T1 / Okuda I<->H RNR). The trigger lives on surfaces
     // (a short interior edge is a consecutive vertex pair on a surface; an H-state feature is a
     // triangular surface), so the pass scans surfaces. It is a no-op unless reconnectLength > 0.
-
-    passMask = std::vector<bool>(mesh->sizeSurfaces(), false);
-    for(auto &i : excludedSurfaces)
-        if(i < passMask.size())
-            passMask[i] = true;
-    if(MeshQuality_constructOperationsReconnection(mesh, passMask, reconnectLength, reconnectHysteresis, reconnectEnergyGate, op_active, op_heads) != S_OK ||
-        MeshQuality_doOperations(mesh, op_active, op_heads, affectedChildren) != S_OK ||
-        MeshQuality_clearOperations(op_active) != S_OK) {
-        _working = false;
-        return E_FAIL;
+    //
+    // Throttle (the 3DVertVor oracle's dtr): the reconnection pass runs only on every
+    // reconnectInterval-th doQuality() call. Between passes the integrator relaxes the mesh, which
+    // breaks the post-reconnection overshoot storm that reconnecting every step produces (oracle
+    // reconnects every dtr = 10*dt; see rnr/PORTING_NOTES.md 6c/6d). reconnectInterval = 1 (the
+    // default) preserves the original every-step behavior. The counter advances every doQuality()
+    // call regardless so the cadence is measured in integration steps.
+    const unsigned int interval = reconnectInterval < 1 ? 1 : reconnectInterval;
+    const bool reconnectDue = (this->reconnectCounter % interval) == 0;
+    this->reconnectCounter++;
+    if(reconnectDue) {
+        passMask = std::vector<bool>(mesh->sizeSurfaces(), false);
+        for(auto &i : excludedSurfaces)
+            if(i < passMask.size())
+                passMask[i] = true;
+        if(MeshQuality_constructOperationsReconnection(mesh, passMask, reconnectLength, reconnectHysteresis, reconnectEnergyGate, op_active, op_heads) != S_OK ||
+            MeshQuality_doOperationsReconnectionSerial(mesh, op_active, op_heads, affectedChildren) != S_OK ||
+            MeshQuality_clearOperations(op_active) != S_OK) {
+            _working = false;
+            return E_FAIL;
+        }
     }
 
     _working = false;
@@ -2091,6 +2145,11 @@ HRESULT MeshQuality::setReconnectEnergyGate(const bool &_val) {
 
 HRESULT MeshQuality::setStockQualityOps(const bool &_val) {
     stockQualityOps = _val;
+    return S_OK;
+}
+
+HRESULT MeshQuality::setReconnectInterval(const unsigned int &_val) {
+    reconnectInterval = _val < 1 ? 1 : _val;
     return S_OK;
 }
 
@@ -2248,6 +2307,7 @@ namespace TissueForge::io {
         TF_IOTOEASY(fileElement, metaData, "reconnectHysteresis", dataElement.getReconnectHysteresis());
         TF_IOTOEASY(fileElement, metaData, "reconnectEnergyGate", dataElement.getReconnectEnergyGate());
         TF_IOTOEASY(fileElement, metaData, "stockQualityOps", dataElement.getStockQualityOps());
+        TF_IOTOEASY(fileElement, metaData, "reconnectInterval", dataElement.getReconnectInterval());
         TF_IOTOEASY(fileElement, metaData, "collision2D", dataElement.getCollision2D());
         TF_IOTOEASY(fileElement, metaData, "excludedVertices", dataElement.getExcludedVertices());
         TF_IOTOEASY(fileElement, metaData, "excludedSurfaces", dataElement.getExcludedSurfaces());
@@ -2305,6 +2365,12 @@ namespace TissueForge::io {
             if(_sqItr != _rcChildren.end())
                 ::TissueForge::io::fromFile(_sqItr->second, metaData, &stockQualityOps);
             dataElement->setStockQualityOps(stockQualityOps);
+
+            unsigned int reconnectInterval = 1;
+            auto _riItr = _rcChildren.find("reconnectInterval");
+            if(_riItr != _rcChildren.end())
+                ::TissueForge::io::fromFile(_riItr->second, metaData, &reconnectInterval);
+            dataElement->setReconnectInterval(reconnectInterval);
         }
 
         bool collision2D;
