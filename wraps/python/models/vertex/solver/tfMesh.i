@@ -49,6 +49,15 @@
             return self.qualityWorking()
 
         @property
+        def periodic_geometry(self) -> bool:
+            """Whether vertex-mesh geometry uses periodic minimum-image distances"""
+            return self.getPeriodicGeometry()
+
+        @periodic_geometry.setter
+        def periodic_geometry(self, _val: bool):
+            self.setPeriodicGeometry(_val)
+
+        @property
         def quality(self):
             """Quality maintenance"""
             return self.getQuality()

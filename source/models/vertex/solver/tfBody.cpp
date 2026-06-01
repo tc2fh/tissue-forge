@@ -1,20 +1,20 @@
 /*******************************************************************************
  * This file is part of Tissue Forge.
  * Copyright (c) 2022-2024 T.J. Sego and Tien Comlekoglu
- * 
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Lesser General Public License as published
  * by the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- * 
+ *
  ******************************************************************************/
 
 #include "tfBody.h"
@@ -23,6 +23,7 @@
 #include "tfSurface.h"
 #include "tfMeshSolver.h"
 #include "tf_mesh_io.h"
+#include "tf_mesh_metrics.h"
 #include "tfVertexSolverFIO.h"
 
 #include <tfError.h>
@@ -59,7 +60,7 @@ using namespace TissueForge::models::vertex;
 //////////
 
 
-static HRESULT Body_loadSurfaces(Body* body, std::vector<Surface*> _surfaces) { 
+static HRESULT Body_loadSurfaces(Body* body, std::vector<Surface*> _surfaces) {
     Body_GETMESH(mesh, E_FAIL);
 
     if(_surfaces.size() >= 4) {
@@ -69,14 +70,14 @@ static HRESULT Body_loadSurfaces(Body* body, std::vector<Surface*> _surfaces) {
         }
 
         return S_OK;
-    } 
+    }
     else {
         TF_Log(LOG_ERROR) << "A body requires at least 4 surfaces";
         return E_FAIL;
     }
 };
 
-static HRESULT Body_loadSurfaces(Body* body, const std::vector<SurfaceHandle> &_surfaces) { 
+static HRESULT Body_loadSurfaces(Body* body, const std::vector<SurfaceHandle> &_surfaces) {
     std::vector<Surface*> surfaces;
     surfaces.reserve(_surfaces.size());
     for(auto &_s : _surfaces) {
@@ -91,11 +92,11 @@ static HRESULT Body_loadSurfaces(Body* body, const std::vector<SurfaceHandle> &_
 };
 
 
-Body::Body() : 
-    centroid{0.f}, 
-    area{0.f}, 
-    volume{0.f}, 
-    density{0.f}, 
+Body::Body() :
+    centroid{0.f},
+    area{0.f},
+    volume{0.f},
+    density{0.f},
     typeId{-1},
     species{NULL}
 {
@@ -172,24 +173,30 @@ std::string Body::str() const {
 }
 
 void Body::updateInternals() {
-    for(auto &v : getVertices()) 
+    for(auto &v : getVertices())
         v->positionChanged();
-    for(auto &s : getSurfaces()) 
+    for(auto &s : getSurfaces())
         s->positionChanged();
 
     centroid = FVector3(0.f);
     area = 0.f;
     volume = 0.f;
 
+    const FVector3 origin = surfaces.empty() ? FVector3(0.f) : surfaces.front()->getCentroid();
     for(auto &s : surfaces) {
-        centroid += s->getCentroid() * s->getArea();
+        centroid += meshPositionNear(s->getCentroid(), origin) * s->getArea();
         area += s->getArea();
     }
     centroid /= area;
 
     for(auto &s : surfaces) {
         s->refreshBodies();
-        volume += s->getVolumeContr(this);
+        if(meshUsesPeriodicGeometry()) {
+            const FVector3 scent = meshPositionNear(s->getCentroid(), centroid);
+            volume += s->getUnnormalizedNormal().dot(scent) * s->volumeSense(this) / 6.f;
+        }
+        else
+            volume += s->getVolumeContr(this);
     }
 
 }
@@ -215,7 +222,7 @@ HRESULT Body::remove(Surface *s) {
         TF_Log(LOG_ERROR);
         return E_FAIL;
     }
-    
+
     surfaces.erase(itr);
     return S_OK;
 }
@@ -226,20 +233,20 @@ HRESULT Body::replace(Surface *toInsert, Surface *toRemove) {
 }
 
 HRESULT Body::destroy() {
-    if(this->typeId >= 0 && this->type()->remove(BodyHandle(this->_objId)) != S_OK) 
+    if(this->typeId >= 0 && this->type()->remove(BodyHandle(this->_objId)) != S_OK)
         return E_FAIL;
-    if(this->_objId >= 0) 
+    if(this->_objId >= 0)
         Mesh::get()->remove(this);
     return S_OK;
 }
 
 HRESULT Body::destroy(Body *target) {
     auto& surfaces = target->getSurfaces();
-    if(target->destroy() != S_OK) 
+    if(target->destroy() != S_OK)
         return E_FAIL;
 
-    for(auto &s : surfaces) 
-        if(s->getBodies().size() == 0) 
+    for(auto &s : surfaces)
+        if(s->getBodies().size() == 0)
             Surface::destroy(s);
 
     return S_OK;
@@ -252,7 +259,7 @@ HRESULT Body::destroy(BodyHandle &target) {
         return E_FAIL;
     }
     HRESULT res = Body::destroy(_target);
-    if(res == S_OK) 
+    if(res == S_OK)
         target.id = -1;
     return res;
 }
@@ -265,7 +272,7 @@ HRESULT Body::destroy(const std::vector<Body*>& toRemove) {
     std::vector<std::unordered_map<BodyType*, std::unordered_set<Body*> > > bodiesByTypePool(ThreadPool::size());
     std::vector<std::unordered_set<Surface*> > surfacesToRemovePool(ThreadPool::size());
     parallel_for(
-        ThreadPool::size(), 
+        ThreadPool::size(),
         [&toRemove, &bodiesToRemovePool, &bodyTypesPool, &bodiesByTypePool, &surfacesToRemovePool](int tid) -> void {
             std::unordered_set<Body*>& bodiesToRemoveThread = bodiesToRemovePool[tid];
             std::unordered_set<BodyType*>& bodyTypesThread = bodyTypesPool[tid];
@@ -280,19 +287,19 @@ HRESULT Body::destroy(const std::vector<Body*>& toRemove) {
                         bodyTypesThread.insert(btype);
                         bodiesByTypeThread[btype].insert(b);
                     }
-                    for(auto& s : b->getSurfaces()) 
-                        if(s->getBodies().size() == 1) 
+                    for(auto& s : b->getSurfaces())
+                        if(s->getBodies().size() == 1)
                             surfacesToRemoveThread.insert(s);
                 }
             }
         }
     );
     size_t numBodies = 0;
-    for(auto& bodiesToRemoveThread : bodiesToRemovePool) 
+    for(auto& bodiesToRemoveThread : bodiesToRemovePool)
         numBodies += bodiesToRemoveThread.size();
     std::unordered_set<Body*> bodiesToRemove;
     bodiesToRemove.reserve(numBodies);
-    for(auto& bodiesToRemoveThread : bodiesToRemovePool) 
+    for(auto& bodiesToRemoveThread : bodiesToRemovePool)
         bodiesToRemove.insert(bodiesToRemoveThread.begin(), bodiesToRemoveThread.end());
     std::vector<Body*> bodiesToRemoveVec(bodiesToRemove.begin(), bodiesToRemove.end());
 
@@ -300,11 +307,11 @@ HRESULT Body::destroy(const std::vector<Body*>& toRemove) {
 
     std::vector<std::unordered_set<Surface*> > affectedSurfacesPool(ThreadPool::size());
     parallel_for(
-        ThreadPool::size(), 
+        ThreadPool::size(),
         [&bodiesToRemoveVec, &affectedSurfacesPool](int tid) -> void {
             std::unordered_set<Surface*>& affectedSurfacesThread = affectedSurfacesPool[tid];
-            for(int i = tid; i < bodiesToRemoveVec.size(); i += ThreadPool::size()) 
-                for(auto& s : bodiesToRemoveVec[i]->getSurfaces()) 
+            for(int i = tid; i < bodiesToRemoveVec.size(); i += ThreadPool::size())
+                for(auto& s : bodiesToRemoveVec[i]->getSurfaces())
                     affectedSurfacesThread.insert(s);
         }
     );
@@ -312,24 +319,24 @@ HRESULT Body::destroy(const std::vector<Body*>& toRemove) {
     // Remove from types
 
     size_t numBodyTypes = 0;
-    for(auto& bodyTypesThread : bodyTypesPool) 
+    for(auto& bodyTypesThread : bodyTypesPool)
         numBodyTypes += bodyTypesThread.size();
     std::unordered_set<BodyType*> bodyTypes;
     bodyTypes.reserve(numBodyTypes);
-    for(auto& bodyTypesThread : bodyTypesPool) 
+    for(auto& bodyTypesThread : bodyTypesPool)
         bodyTypes.insert(bodyTypesThread.begin(), bodyTypesThread.end());
     std::unordered_map<BodyType*, size_t> numBodiesByType;
     for(auto& stype : bodyTypes) {
         size_t& nBodies = numBodiesByType[stype];
-        for(auto& bodiesByTypeThread : bodiesByTypePool) 
+        for(auto& bodiesByTypeThread : bodiesByTypePool)
             nBodies += bodiesByTypeThread[stype].size();
     }
     std::unordered_map<BodyType*, std::unordered_set<BodyHandle> > bodiesByType;
     for(auto& btype : bodyTypes) {
         std::unordered_set<BodyHandle>& thisBodiesByType = bodiesByType[btype];
         thisBodiesByType.reserve(numBodiesByType[btype]);
-        for(auto& bodiesByTypeThread : bodiesByTypePool) 
-            for(auto& s : bodiesByTypeThread[btype]) 
+        for(auto& bodiesByTypeThread : bodiesByTypePool)
+            for(auto& s : bodiesByTypeThread[btype])
                 thisBodiesByType.emplace(s->objectId());
         btype->remove({thisBodiesByType.begin(), thisBodiesByType.end()});
     }
@@ -341,12 +348,12 @@ HRESULT Body::destroy(const std::vector<Body*>& toRemove) {
     // Destroy orphaned surfaces
 
     size_t numSurfaces = 0;
-    for(auto& surfacesToRemoveThread : surfacesToRemovePool) 
+    for(auto& surfacesToRemoveThread : surfacesToRemovePool)
         numSurfaces += surfacesToRemoveThread.size();
     std::vector<Surface*> surfacesToRemove;
     surfacesToRemove.reserve(numSurfaces);
-    for(auto& surfacesToRemoveThread : surfacesToRemovePool) 
-        for(auto& s : surfacesToRemoveThread) 
+    for(auto& surfacesToRemoveThread : surfacesToRemovePool)
+        for(auto& s : surfacesToRemoveThread)
             surfacesToRemove.push_back(s);
     Surface::destroy(surfacesToRemove);
 
@@ -354,36 +361,45 @@ HRESULT Body::destroy(const std::vector<Body*>& toRemove) {
 }
 
 bool Body::validate() {
-    if(surfaces.size() < 3) 
+    if(surfaces.size() < 3)
         return false;
 
-    for(auto &s : surfaces) 
-        if(!s->defines(this) || !this->definedBy(s)) 
+    for(auto &s : surfaces)
+        if(!s->defines(this) || !this->definedBy(s))
             return false;
 
     return true;
 }
 
-HRESULT Body::positionChanged() { 
+HRESULT Body::positionChanged() {
     centroid = FVector3(0.f);
     area = 0.f;
     volume = 0.f;
 
+    const FVector3 origin = surfaces.empty() ? FVector3(0.f) : surfaces.front()->getCentroid();
     for(auto &s : surfaces) {
-        centroid += s->getCentroid() * s->getArea();
+        centroid += meshPositionNear(s->getCentroid(), origin) * s->getArea();
         area += s->getArea();
-        volume += s->getVolumeContr(this);
     }
     centroid /= area;
+
+    for(auto &s : surfaces) {
+        if(meshUsesPeriodicGeometry()) {
+            const FVector3 scent = meshPositionNear(s->getCentroid(), centroid);
+            volume += s->getUnnormalizedNormal().dot(scent) * s->volumeSense(this) / 6.f;
+        }
+        else
+            volume += s->getVolumeContr(this);
+    }
 
     return S_OK;
 }
 
 BodyType *Body::type() const {
-    if(typeId < 0) 
+    if(typeId < 0)
         return NULL;
     MeshSolver *solver = MeshSolver::get();
-    if(!solver) 
+    if(!solver)
         return NULL;
     return solver->getBodyType(typeId);
 }
@@ -398,8 +414,8 @@ HRESULT Body::become(BodyType *btype) {
 std::vector<Vertex*> Body::getVertices() const {
     std::unordered_set<Vertex*> result;
 
-    for(auto &s : surfaces) 
-        for(auto &v : s->vertices) 
+    for(auto &s : surfaces)
+        for(auto &v : s->vertices)
             result.insert(v);
 
     return std::vector<Vertex*>(result.begin(), result.end());
@@ -411,11 +427,11 @@ Vertex *Body::findVertex(const FVector3 &dir) const {
     FloatP_t bestCrit = 0;
 
     for(auto &v : getVertices()) {
-        const FVector3 rel_pt = v->getPosition() - centroid;
-        if(rel_pt.isZero()) 
+        const FVector3 rel_pt = meshRelativePosition(v->getPosition(), centroid);
+        if(rel_pt.isZero())
             continue;
         FloatP_t crit = rel_pt.dot(dir) / rel_pt.dot();
-        if(!result || crit > bestCrit) { 
+        if(!result || crit > bestCrit) {
             result = v;
             bestCrit = crit;
         }
@@ -430,11 +446,11 @@ Surface *Body::findSurface(const FVector3 &dir) const {
     FloatP_t bestCrit = 0;
 
     for(auto &s : getSurfaces()) {
-        const FVector3 rel_pt = s->getCentroid() - centroid;
-        if(rel_pt.isZero()) 
+        const FVector3 rel_pt = meshRelativePosition(s->getCentroid(), centroid);
+        if(rel_pt.isZero())
             continue;
         FloatP_t crit = rel_pt.dot(dir) / rel_pt.dot();
-        if(!result || crit > bestCrit) { 
+        if(!result || crit > bestCrit) {
             result = s;
             bestCrit = crit;
         }
@@ -445,8 +461,8 @@ Surface *Body::findSurface(const FVector3 &dir) const {
 
 std::vector<Body*> Body::connectedBodies() const {
     std::unordered_set<Body*> result;
-    for(auto &s : surfaces) 
-        for(auto &b : s->getBodies()) 
+    for(auto &s : surfaces)
+        for(auto &b : s->getBodies())
             result.insert(b);
     result.erase(result.find(const_cast<Body*>(this)));
     return std::vector<Body*>(result.begin(), result.end());
@@ -454,8 +470,8 @@ std::vector<Body*> Body::connectedBodies() const {
 
 std::vector<Body*> Body::adjacentBodies() const {
     std::unordered_set<Body*> result;
-    for(auto &v : getVertices()) 
-        for(auto &b : v->getBodies()) 
+    for(auto &v : getVertices())
+        for(auto &b : v->getBodies())
             result.insert(b);
     result.erase(result.find(const_cast<Body*>(this)));
     return std::vector<Body*>(result.begin(), result.end());
@@ -464,10 +480,10 @@ std::vector<Body*> Body::adjacentBodies() const {
 std::vector<Surface*> Body::neighborSurfaces(const Surface *s) const {
     std::unordered_set<Surface*> result;
     for(auto &so : surfaces) {
-        if(so->objectId() == s->objectId()) 
+        if(so->objectId() == s->objectId())
             continue;
-        for(auto &v : s->vertices) 
-            if(v->defines(so)) { 
+        for(auto &v : s->vertices)
+            if(v->defines(so)) {
                 result.insert(so);
                 break;
             }
@@ -477,36 +493,36 @@ std::vector<Surface*> Body::neighborSurfaces(const Surface *s) const {
 
 FVector3 Body::getVelocity() const {
     FVector3 result;
-    for(auto &v : getVertices()) 
+    for(auto &v : getVertices())
         result += v->particle()->getVelocity() * getVertexMass(v);
     return result / getMass();
 }
 
 FloatP_t Body::getVertexArea(const Vertex *v) const {
     FloatP_t result = FPTYPE_ZERO;
-    for(auto &s : surfaces) 
+    for(auto &s : surfaces)
         result += s->getVertexArea(v);
     return result;
 }
 
 FloatP_t Body::getVertexVolume(const Vertex *v) const {
-    if(area == 0.f) 
+    if(area == 0.f)
         return 0.f;
     return getVertexArea(v) / area * volume;
 }
 
 std::vector<Surface*> Body::findInterface(const Body *b) const {
     std::vector<Surface*> result;
-    for(auto &s : surfaces) 
-        if(s->defines(b)) 
+    for(auto &s : surfaces)
+        if(s->defines(b))
             result.push_back(s);
     return result;
 }
 
 FloatP_t Body::contactArea(const Body *other) const {
     FloatP_t result = 0.f;
-    for(auto &s : surfaces) 
-        if(s->defines(other)) 
+    for(auto &s : surfaces)
+        if(s->defines(other))
             result += s->area;
     return result;
 }
@@ -514,15 +530,15 @@ FloatP_t Body::contactArea(const Body *other) const {
 std::vector<Vertex*> Body::sharedVertices(const Body *other) const {
     std::vector<Vertex*> verts = getVertices();
     std::vector<Vertex*> result;
-    for(auto &v : other->getVertices()) 
-        if(std::find(verts.begin(), verts.end(), v) != verts.end()) 
+    for(auto &v : other->getVertices())
+        if(std::find(verts.begin(), verts.end(), v) != verts.end())
             result.push_back(v);
     return result;
 }
 
 bool Body::isOutside(const FVector3 &pos) const {
     // Test against outward-facing normal of nearest surface
-    const FVector3 rel_pos = pos - centroid;
+    const FVector3 rel_pos = meshRelativePosition(pos, centroid);
     return rel_pos.dot(findSurface(rel_pos)->getOutwardNormal(this)) > 0;
 }
 
@@ -538,11 +554,11 @@ struct Body_BodySplitEdge {
 
     static bool intersects(Vertex *v1, Vertex *v2, const FVector4 &planeEq, FVector3 &intersect_pt) {
         FVector3 pos_old = v1->getPosition();
-        FVector3 rel_pos = v2->getPosition() - pos_old;
+        FVector3 rel_pos = meshRelativePosition(v2->getPosition(), pos_old);
         FloatP_t intersect_t = Magnum::Math::Intersection::planeLine(planeEq, pos_old, rel_pos);
-        
+
         // If new position is indeterminant, exit out
-        if(!(intersect_t > 0 && intersect_t < 1)) 
+        if(!(intersect_t > 0 && intersect_t < 1))
             return false;
 
         // Return coordinates
@@ -552,8 +568,8 @@ struct Body_BodySplitEdge {
 
     static std::vector<SurfaceHandle> extractSurfaces(Vertex *v1, Vertex *v2, Body *b) {
         std::vector<SurfaceHandle> surfaces;
-        for(auto &s : b->getSurfaces()) 
-            if(v1->defines(s) && v2->defines(s)) 
+        for(auto &s : b->getSurfaces())
+            if(v1->defines(s) && v2->defines(s))
                 surfaces.emplace_back(s->objectId());
         return surfaces;
     }
@@ -570,9 +586,9 @@ struct Body_BodySplitEdge {
                 VertexHandle vb(_vb->objectId());
 
                 std::vector<std::pair<VertexHandle, VertexHandle> > edge_cases;
-                if(v < va) 
+                if(v < va)
                     edge_cases.push_back({v, va});
-                if(v < vb) 
+                if(v < vb)
                     edge_cases.push_back({v, vb});
 
                 for(auto &ec : edge_cases) {
@@ -586,7 +602,7 @@ struct Body_BodySplitEdge {
                         if(planeEq.distance(_v_lower->getPosition()) > 0) {
                             edge.v_oldSide = v_upper;
                             edge.v_newSide = v_lower;
-                        } 
+                        }
                         else {
                             edge.v_oldSide = v_lower;
                             edge.v_newSide = v_upper;
@@ -607,9 +623,9 @@ struct Body_BodySplitEdge {
 
         std::vector<Body_BodySplitEdge> result;
         result.reserve(edgeMap.size());
-        for(auto &itr : edgeMap) 
+        for(auto &itr : edgeMap)
             result.push_back(itr.second);
-        
+
         std::vector<Body_BodySplitEdge> result_sorted;
         result_sorted.reserve(result.size());
         result_sorted.push_back(result.back());
@@ -617,13 +633,13 @@ struct Body_BodySplitEdge {
         SurfaceHandle s_target = result_sorted[0].surfaces[1];
         while(!result.empty()) {
             std::vector<Body_BodySplitEdge>::iterator itr = result.begin();
-            while(itr != result.end()) { 
-                if(itr->surfaces[0].id == s_target.id) { 
+            while(itr != result.end()) {
+                if(itr->surfaces[0].id == s_target.id) {
                     s_target = itr->surfaces[1];
                     result_sorted.push_back(*itr);
                     result.erase(itr);
                     break;
-                } 
+                }
                 else if(itr->surfaces[1].id == s_target.id) {
                     s_target = itr->surfaces[0];
                     result_sorted.push_back(*itr);
@@ -633,7 +649,7 @@ struct Body_BodySplitEdge {
                 itr++;
             }
         }
-        
+
         return result_sorted;
     }
 
@@ -653,15 +669,15 @@ struct Body_BodySplitEdge {
                     break;
                 }
             }
-            if(!s) 
+            if(!s)
                 return E_FAIL;
-            
+
             VertexHandle v_old = edge_i.v_oldSide;
             VertexHandle v_new = edge_i.v_newSide;
             VertexHandle v_old_na = std::get<0>(s.neighborVertices(v_old));
-            if(v_old_na.id == v_new.id) 
+            if(v_old_na.id == v_new.id)
                 result.push_back({SurfaceHandle(s.id), {edge_i, edge_j}});
-            else 
+            else
                 result.push_back({SurfaceHandle(s.id), {edge_j, edge_i}});
         }
         return S_OK;
@@ -672,9 +688,9 @@ struct Body_BodySplitEdge {
         for(auto itr = splitPlan.begin(); itr != splitPlan.end(); itr++) {
             auto edges = itr->second;
             auto edges_prev = itr == splitPlan.begin() ? splitPlan.back().second : (itr - 1)->second;
-            if(edges.first == edges_prev.first || edges.first == edges_prev.second) 
+            if(edges.first == edges_prev.first || edges.first == edges_prev.second)
                 vertexPlan.push_back(edges.first);
-            else 
+            else
                 vertexPlan.push_back(edges.second);
         }
         return S_OK;
@@ -695,10 +711,10 @@ Body *Body::split(const FVector3 &cp_pos, const FVector3 &cp_norm, SurfaceType *
     std::vector<SurfaceHandle> surfs_moved;
     for(auto &s : surfaces) {
         size_t num_newSide = 0;
-        for(auto &v : s->vertices) 
-            if(planeEq.distance(v->getPosition()) > 0) 
+        for(auto &v : s->vertices)
+            if(planeEq.distance(v->getPosition()) > 0)
                 num_newSide++;
-        if(num_newSide == s->vertices.size()) 
+        if(num_newSide == s->vertices.size())
             surfs_moved.emplace_back(s->objectId());
     }
 
@@ -707,10 +723,10 @@ Body *Body::split(const FVector3 &cp_pos, const FVector3 &cp_norm, SurfaceType *
 
     // Split edges
     std::vector<Body_BodySplitEdge::surfaceSplitPlanEl_t> sSplitPlan;
-    if(Body_BodySplitEdge::surfaceSplitPlan(splitEdges, sSplitPlan) != S_OK) 
+    if(Body_BodySplitEdge::surfaceSplitPlan(splitEdges, sSplitPlan) != S_OK)
         return NULL;
     std::vector<Body_BodySplitEdge> vertexPlan;
-    if(Body_BodySplitEdge::vertexConstructorPlan(sSplitPlan, vertexPlan) != S_OK) 
+    if(Body_BodySplitEdge::vertexConstructorPlan(sSplitPlan, vertexPlan) != S_OK)
         return NULL;
     if(mesh->ensureAvailableVertices(vertexPlan.size()) != S_OK || mesh->ensureAvailableSurfaces(sSplitPlan.size()) != S_OK) {
         TF_Log(LOG_ERROR);
@@ -749,13 +765,13 @@ Body *Body::split(const FVector3 &cp_pos, const FVector3 &cp_norm, SurfaceType *
         VertexHandle v1 = new_vertices_map[{sSplitPlan[i].second.first.v_oldSide.id,  sSplitPlan[i].second.first.v_newSide.id}];
         VertexHandle v2 = new_vertices_map[{sSplitPlan[i].second.second.v_oldSide.id, sSplitPlan[i].second.second.v_newSide.id}];
         SurfaceHandle s_new = s.split(v1, v2);
-        if(!s_new) 
+        if(!s_new)
             return NULL;
         new_surfs.push_back(s_new);
     }
 
     // Construct interface surface
-    if(!stype) 
+    if(!stype)
         stype = new_surfs[0].type();
     SurfaceHandle s_new = (*stype)(new_vertices);
     if(!s_new) {
@@ -782,14 +798,14 @@ Body *Body::split(const FVector3 &cp_pos, const FVector3 &cp_norm, SurfaceType *
     // Construct new body
     std::vector<SurfaceHandle> new_body_surfs(surfs_moved);
     new_body_surfs.push_back(s_new);
-    for(auto &s : new_surfs) 
+    for(auto &s : new_surfs)
         new_body_surfs.push_back(s);
     BodyHandle b_new = (*type())(new_body_surfs);
     if(!b_new) {
         return NULL;
     }
 
-    if(!Mesh::get()->qualityWorking()) 
+    if(!Mesh::get()->qualityWorking())
         MeshSolver::positionChanged();
 
     MeshSolver::log(MeshLogEventType::Create, {objectId(), b_new.id}, {objType(), b_new.objType()}, "split");
@@ -836,7 +852,7 @@ bool BodyHandle::definedBy(const SurfaceHandle &s) const {
 HRESULT BodyHandle::destroy() {
     BodyHandle_GETOBJ(o, E_FAIL);
     HRESULT res = o->destroy();
-    if(res == S_OK) 
+    if(res == S_OK)
         this->id = -1;
     return res;
 }
@@ -918,7 +934,7 @@ std::vector<SurfaceHandle> BodyHandle::getSurfaces() const {
     auto& _result = o->getSurfaces();
     std::vector<SurfaceHandle> result;
     result.reserve(_result.size());
-    for(auto &_s : _result) 
+    for(auto &_s : _result)
         result.push_back(_s ? SurfaceHandle(_s->objectId()) : SurfaceHandle());
     return result;
 }
@@ -928,7 +944,7 @@ std::vector<VertexHandle> BodyHandle::getVertices() const {
     std::vector<Vertex*> _result = o->getVertices();
     std::vector<VertexHandle> result;
     result.reserve(_result.size());
-    for(auto &_v : _result) 
+    for(auto &_v : _result)
         result.push_back(_v ? VertexHandle(_v->objectId()) : VertexHandle());
     return result;
 }
@@ -950,7 +966,7 @@ std::vector<BodyHandle> BodyHandle::connectedBodies() const {
     std::vector<Body*> _result = o->connectedBodies();
     std::vector<BodyHandle> result;
     result.reserve(_result.size());
-    for(auto &_b : _result) 
+    for(auto &_b : _result)
         result.push_back(_b ? BodyHandle(_b->_objId) : BodyHandle());
     return result;
 }
@@ -960,7 +976,7 @@ std::vector<BodyHandle> BodyHandle::adjacentBodies() const {
     std::vector<Body*> _result = o->adjacentBodies();
     std::vector<BodyHandle> result;
     result.reserve(_result.size());
-    for(auto &_b : _result) 
+    for(auto &_b : _result)
         result.push_back(_b ? BodyHandle(_b->_objId) : BodyHandle());
     return result;
 }
@@ -974,7 +990,7 @@ std::vector<SurfaceHandle> BodyHandle::neighborSurfaces(const SurfaceHandle &s) 
     }
     std::vector<Surface*> _result = o->neighborSurfaces(_s);
     std::vector<SurfaceHandle> result;
-    for(auto &_s : _result) 
+    for(auto &_s : _result)
         result.push_back(_s ? SurfaceHandle(_s->objectId()) : SurfaceHandle());
     return result;
 }
@@ -1043,7 +1059,7 @@ std::vector<VertexHandle> BodyHandle::sharedVertices(const BodyHandle &other) co
     }
     std::vector<Vertex*> _result = o->sharedVertices(_other);
     std::vector<VertexHandle> result;
-    for(auto &_other : _result) 
+    for(auto &_other : _result)
         result.push_back(_other ? VertexHandle(_other->objectId()) : VertexHandle());
     return result;
 }
@@ -1079,7 +1095,7 @@ std::vector<SurfaceHandle> BodyHandle::findInterface(const BodyHandle &b) const 
     std::vector<Surface*> _result = o->findInterface(_b);
     std::vector<SurfaceHandle> result;
     result.reserve(_result.size());
-    for(auto &_s : _result) 
+    for(auto &_s : _result)
         result.push_back(_s ? SurfaceHandle(_s->objectId()) : SurfaceHandle());
     return result;
 }
@@ -1124,8 +1140,8 @@ static BodyHandle BodyType_fromSurfaces(BodyType *btype, const std::vector<Surfa
     }
     // Verify that every parent vertex is in at least two surfaces
     // todo: current vertex condition is necessary for body construction, but is it sufficient?
-    for(auto &s : surfaces) 
-        for(auto &v : s.getVertices()) 
+    for(auto &s : surfaces)
+        for(auto &v : s.getVertices())
             if(v.getSurfaces().size() < 2) {
                 TF_Log(LOG_ERROR) << "Detected insufficient connectivity";
                 return BodyHandle();
@@ -1142,13 +1158,13 @@ static BodyHandle BodyType_fromSurfaces(BodyType *btype, const std::vector<Surfa
     return b;
 }
 
-BodyType::BodyType(const bool &noReg) : 
+BodyType::BodyType(const bool &noReg) :
     MeshObjType()
 {
     name = "Body";
     density = 0.f;
 
-    if(!noReg) 
+    if(!noReg)
         this->registerType();
 }
 
@@ -1162,7 +1178,7 @@ std::string BodyType::str() const {
 
 BodyType *BodyType::findFromName(const std::string &_name) {
     MeshSolver *solver = MeshSolver::get();
-    if(!solver) 
+    if(!solver)
         return NULL;
     return solver->findBodyFromName(_name);
 }
@@ -1171,11 +1187,11 @@ HRESULT BodyType::registerType() {
     if(isRegistered()) return S_OK;
 
     MeshSolver *solver = MeshSolver::get();
-    if(!solver) 
+    if(!solver)
         return E_FAIL;
 
     HRESULT result = solver->registerType(this);
-    if(result == S_OK) 
+    if(result == S_OK)
         on_register();
 
     return result;
@@ -1190,14 +1206,14 @@ BodyType *BodyType::get() {
 }
 
 HRESULT BodyType::add(const BodyHandle &i) {
-    if(!i) 
+    if(!i)
         return tf_error(E_FAIL, "Invalid object");
     Body *_i = i.body();
-    if(!_i) 
+    if(!_i)
         return tf_error(E_FAIL, "Object not registered");
 
     BodyType *iType = _i->type();
-    if(iType) 
+    if(iType)
         iType->remove(i);
 
     _i->typeId = this->id;
@@ -1206,14 +1222,14 @@ HRESULT BodyType::add(const BodyHandle &i) {
 }
 
 HRESULT BodyType::remove(const BodyHandle &i) {
-    if(!i) 
+    if(!i)
         return tf_error(E_FAIL, "Invalid object");
     Body *_i = i.body();
-    if(!_i) 
+    if(!_i)
         return tf_error(E_FAIL, "Object not registered");
 
     auto itr = std::find(this->_instanceIds.begin(), this->_instanceIds.end(), i.id);
-    if(itr == this->_instanceIds.end()) 
+    if(itr == this->_instanceIds.end())
         return tf_error(E_FAIL, "Instance not of this type");
 
     this->_instanceIds.erase(itr);
@@ -1241,14 +1257,14 @@ HRESULT BodyType::remove(const std::vector<BodyHandle>& i) {
             _i[j] = _ij;
         }
     });
-    for(auto& resultThread : resultPool) 
+    for(auto& resultThread : resultPool)
         if(resultThread != S_OK) {
             return tf_error(resultThread, "Failed to add object");
         }
 
     for(auto& s : i) {
         auto itr = std::find(this->_instanceIds.begin(), this->_instanceIds.end(), s.id);
-        if(itr == this->_instanceIds.end()) 
+        if(itr == this->_instanceIds.end())
             return tf_error(E_FAIL, "Instance not of this type");
         this->_instanceIds.erase(itr);
     }
@@ -1261,11 +1277,11 @@ std::vector<BodyHandle> BodyType::getInstances() {
     std::vector<BodyHandle> result;
 
     Mesh *m = Mesh::get();
-    if(m) { 
+    if(m) {
         result.reserve(_instanceIds.size());
         for(size_t i = 0; i < m->sizeBodies(); i++) {
             Body *b = m->getBody(i);
-            if(b && b->typeId == this->id) 
+            if(b && b->typeId == this->id)
                 result.emplace_back(i);
         }
     }
@@ -1284,11 +1300,11 @@ BodyHandle BodyType::operator() (const std::vector<SurfaceHandle> &surfaces) {
 BodyHandle BodyType::operator() (TissueForge::io::ThreeDFMeshData* ioMesh, SurfaceType *stype) {
     std::vector<SurfaceHandle> surfaces;
     surfaces.reserve(ioMesh->faces.size());
-    for(auto &f : ioMesh->faces) 
+    for(auto &f : ioMesh->faces)
         surfaces.push_back((*stype)(f));
-    for(auto &si : surfaces) 
-        for(auto &sj : surfaces) 
-            if(si != sj && Surface::sew(si, sj) != S_OK) 
+    for(auto &si : surfaces)
+        for(auto &sj : surfaces)
+            if(si != sj && Surface::sew(si, sj) != S_OK)
                 return BodyHandle();
     return BodyType_fromSurfaces(this, surfaces);
 }
@@ -1307,11 +1323,11 @@ BodyHandle BodyType::extend(const SurfaceHandle &base, const FVector3 &pos) {
     std::vector<SurfaceHandle> surfaces(1, base);
     for(unsigned int i = 0; i < base_vertices.size(); i++) {
         SurfaceHandle s = (*stype)({
-            base_vertices[i], 
-            base_vertices[i == base_vertices.size() - 1 ? 0 : i + 1], 
+            base_vertices[i],
+            base_vertices[i == base_vertices.size() - 1 ? 0 : i + 1],
             vNew
         });
-        if(!s) 
+        if(!s)
             return BodyHandle();
         surfaces.push_back(s);
     }
@@ -1322,7 +1338,7 @@ BodyHandle BodyType::extend(const SurfaceHandle &base, const FVector3 &pos) {
         return BodyHandle();
     }
 
-    if(!Mesh::get()->qualityWorking()) 
+    if(!Mesh::get()->qualityWorking())
         MeshSolver::positionChanged();
 
     MeshSolver::log(MeshLogEventType::Create, {base.id, b.id}, {base.objType(), b.objType()}, "extend");
@@ -1331,16 +1347,16 @@ BodyHandle BodyType::extend(const SurfaceHandle &base, const FVector3 &pos) {
 }
 
 HRESULT Body_surfaceOutwardNormal(Surface *s, Body *b1, Body *b2, FVector3 &onorm) {
-    if(b1 && b2) { 
+    if(b1 && b2) {
         TF_Log(LOG_ERROR) << "Surface is twice-connected";
         return E_FAIL;
-    } 
+    }
     else if(b1) {
         onorm = s->getNormal();
-    } 
+    }
     else if(b2) {
         onorm = -s->getNormal();
-    } 
+    }
     else {
         onorm = s->getNormal();
     }
@@ -1350,8 +1366,8 @@ HRESULT Body_surfaceOutwardNormal(Surface *s, Body *b1, Body *b2, FVector3 &onor
 BodyHandle BodyType::extrude(const SurfaceHandle &base, const FloatP_t &normLen) {
     Body_GETMESH(mesh, BodyHandle());
     std::vector<VertexHandle> base_vertices = base.getVertices();
-    if(mesh->ensureAvailableVertices(base_vertices.size()) != S_OK || 
-        mesh->ensureAvailableSurfaces(base_vertices.size() + 1) != S_OK || 
+    if(mesh->ensureAvailableVertices(base_vertices.size()) != S_OK ||
+        mesh->ensureAvailableSurfaces(base_vertices.size() + 1) != S_OK ||
         mesh->ensureAvailableBodies(1) != S_OK) {
         TF_Log(LOG_ERROR);
         return BodyHandle();
@@ -1363,7 +1379,7 @@ BodyHandle BodyType::extrude(const SurfaceHandle &base, const FloatP_t &normLen)
     // Only permit if the surface has an available slot
     Surface *_base = base.surface();
     _base->refreshBodies();
-    if(Body_surfaceOutwardNormal(_base, _base->b1, _base->b2, normal) != S_OK) 
+    if(Body_surfaceOutwardNormal(_base, _base->b1, _base->b2, normal) != S_OK)
         return BodyHandle();
 
     std::vector<VertexHandle> newVertices;
@@ -1371,19 +1387,19 @@ BodyHandle BodyType::extrude(const SurfaceHandle &base, const FloatP_t &normLen)
     SurfaceType *stype = _base->type();
     FVector3 disp = normal * normLen;
 
-    for(i = 0; i < base_vertices.size(); i++) 
+    for(i = 0; i < base_vertices.size(); i++)
         newVertices.push_back(Vertex::create(base_vertices[i].getPosition() + disp));
 
     std::vector<SurfaceHandle> newSurfaces;
     for(i = 0; i < base_vertices.size(); i++) {
         j = i + 1 >= base_vertices.size() ? i + 1 - base_vertices.size() : i + 1;
         SurfaceHandle s = (*stype)({
-            base_vertices[i], 
-            base_vertices[j], 
-            newVertices[j], 
+            base_vertices[i],
+            base_vertices[j],
+            newVertices[j],
             newVertices[i]
         });
-        if(!s) 
+        if(!s)
             return BodyHandle();
         newSurfaces.push_back(s);
     }
@@ -1395,7 +1411,7 @@ BodyHandle BodyType::extrude(const SurfaceHandle &base, const FloatP_t &normLen)
         return BodyHandle();
     }
 
-    if(!Mesh::get()->qualityWorking()) 
+    if(!Mesh::get()->qualityWorking())
         MeshSolver::positionChanged();
 
     MeshSolver::log(MeshLogEventType::Create, {base.id, b.id}, {base.objType(), b.objType()}, "extrude");
@@ -1420,14 +1436,14 @@ namespace TissueForge::io {
 
         if(dataElement->actors.size() > 0) {
             std::vector<TissueForge::models::vertex::MeshObjActor*> actors;
-            for(auto &a : dataElement->actors) 
-                if(a) 
+            for(auto &a : dataElement->actors)
+                if(a)
                     actors.push_back(a);
             TF_IOTOEASY(fileElement, metaData, "actors", actors);
         }
 
         std::vector<int> surfaces;
-        for(auto &s : dataElement->getSurfaces()) 
+        for(auto &s : dataElement->getSurfaces())
             surfaces.push_back(s->objectId());
         TF_IOTOEASY(fileElement, metaData, "surfaces", surfaces);
 
@@ -1448,14 +1464,14 @@ namespace TissueForge::io {
 
     template <>
     HRESULT fromFile(const IOElement &fileElement, const MetaData &metaData, TissueForge::models::vertex::Body **dataElement) {
-        
-        if(!FIO::hasImport()) 
+
+        if(!FIO::hasImport())
             return tf_error(E_FAIL, "No import data available");
-        else if(!TissueForge::models::vertex::io::VertexSolverFIOModule::hasImport()) 
+        else if(!TissueForge::models::vertex::io::VertexSolverFIOModule::hasImport())
             return tf_error(E_FAIL, "No vertex import data available");
 
         TissueForge::models::vertex::MeshSolver *solver = TissueForge::models::vertex::MeshSolver::get();
-        if(!solver) 
+        if(!solver)
             return tf_error(E_FAIL, "No vertex solver available");
         Body_GETMESH(mesh, E_FAIL);
 
@@ -1515,7 +1531,7 @@ namespace TissueForge::io {
 
     template <>
     HRESULT fromFile(const IOElement &fileElement, const MetaData &metaData, TissueForge::models::vertex::BodyHandle *dataElement) {
-        
+
         IOChildMap::const_iterator feItr;
 
         int id;
@@ -1532,8 +1548,8 @@ namespace TissueForge::io {
 
         if(dataElement.actors.size() > 0) {
             std::vector<TissueForge::models::vertex::MeshObjActor*> actors;
-            for(auto &a : dataElement.actors) 
-                if(a) 
+            for(auto &a : dataElement.actors)
+                if(a)
                     actors.push_back(a);
             TF_IOTOEASY(fileElement, metaData, "actors", actors);
         }
@@ -1548,7 +1564,7 @@ namespace TissueForge::io {
 
     template <>
     HRESULT fromFile(const IOElement &fileElement, const MetaData &metaData, TissueForge::models::vertex::BodyType **dataElement) {
-        
+
         *dataElement = new TissueForge::models::vertex::BodyType();
 
         TF_IOFROMEASY(fileElement, metaData, "name", &(*dataElement)->name);
@@ -1564,9 +1580,9 @@ namespace TissueForge::io {
 std::string TissueForge::models::vertex::Body::toString() {
     TissueForge::io::IOElement el = TissueForge::io::IOElement::create();
     std::string result;
-    if(TissueForge::io::toFile(this, TissueForge::io::MetaData(), el) == S_OK) 
+    if(TissueForge::io::toFile(this, TissueForge::io::MetaData(), el) == S_OK)
         result = TissueForge::io::toStr(el);
-    else 
+    else
         result = "";
     return result;
 }

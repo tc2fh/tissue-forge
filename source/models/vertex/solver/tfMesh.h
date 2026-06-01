@@ -63,6 +63,7 @@ namespace TissueForge::models::vertex {
         bool isDirty;
         MeshSolver *_solver = NULL;
         MeshQuality *_quality;
+        bool periodicGeometry;
         std::mutex meshLock;
 
         HRESULT incrementVertices(const size_t &numIncr=TFMESHINV_INCR);
@@ -116,6 +117,16 @@ namespace TissueForge::models::vertex {
          * @return true if a mesh quality instance is working on the mesh
          */
         bool qualityWorking() const { return hasQuality() && getQuality().working(); }
+
+        /**
+         * @brief Test whether vertex-mesh geometry uses periodic minimum-image distances.
+         */
+        bool getPeriodicGeometry() const { return periodicGeometry; }
+
+        /**
+         * @brief Set whether vertex-mesh geometry uses periodic minimum-image distances.
+         */
+        HRESULT setPeriodicGeometry(const bool &_periodicGeometry) { periodicGeometry = _periodicGeometry; return S_OK; }
 
         /**
          * @brief Ensure that there are a given number of allocated vertices

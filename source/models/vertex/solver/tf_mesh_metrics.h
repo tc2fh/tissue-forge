@@ -36,6 +36,38 @@ namespace TissueForge::models::vertex {
 
 
 /**
+ * @brief Apply a component-wise periodic minimum-image convention to a displacement.
+ *
+ * If a box component is non-positive, that component is left unchanged.
+ */
+FVector3 minimumImage(const FVector3 &disp, const FVector3 &box);
+
+/**
+ * @brief Test whether the current mesh has periodic vertex geometry enabled.
+ */
+bool meshUsesPeriodicGeometry();
+
+/**
+ * @brief Get the box used by periodic vertex geometry.
+ */
+FVector3 meshPeriodicBox();
+
+/**
+ * @brief Relative position using the mesh-level periodic geometry setting.
+ */
+FVector3 meshRelativePosition(const FVector3 &pos, const FVector3 &origin);
+
+/**
+ * @brief Absolute position of pos translated to the nearest image around origin.
+ */
+FVector3 meshPositionNear(const FVector3 &pos, const FVector3 &origin);
+
+/**
+ * @brief Wrap a position into the periodic vertex-geometry box when enabled.
+ */
+FVector3 meshWrapPosition(const FVector3 &pos);
+
+/**
  * @brief Calculate the strain in a edge defined by two vertices
  * 
  * @param v1 first vertex

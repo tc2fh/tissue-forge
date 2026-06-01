@@ -23,6 +23,7 @@
 #include <models/vertex/solver/tfSurface.h>
 #include <models/vertex/solver/tfVertex.h>
 #include <models/vertex/solver/tfMeshSolver.h>
+#include <models/vertex/solver/tf_mesh_metrics.h>
 #include <models/vertex/solver/tfVertexSolverFIO.h>
 
 #include <types/tf_types.h>
@@ -59,7 +60,7 @@ static FloatP_t Adhesion_energy_Body(const Body *b, const Vertex *v, const Float
 
         Vertex *vp = std::get<0>(s->neighborVertices(v));
 
-        e += metrics::relativePosition(vp->getPosition(), posv).length();
+        e += meshRelativePosition(vp->getPosition(), posv).length();
     }
 
     return 0.5 * lam * e;
@@ -86,8 +87,8 @@ static FVector3 Adhesion_force_Body(const Body *b, const Vertex *v, const FloatP
         for(std::vector<Vertex*>::iterator itr = svertices.begin(); itr != svertices.end(); itr++) {
             Vertex *vc = *itr;
             Vertex *vn = itr + 1 == svertices.end() ? svertices.front() : *(itr + 1);
-            const FVector3 posvc = vc->getPosition();
-            const FVector3 posvn = vn->getPosition();
+            const FVector3 posvc = meshPositionNear(vc->getPosition(), scent);
+            const FVector3 posvn = meshPositionNear(vn->getPosition(), scent);
             const FVector3 triNorm = Magnum::Math::cross(posvc - scent, posvn - scent);
             if(triNorm.isZero()) 
                 continue;
@@ -131,8 +132,8 @@ static FloatP_t Adhesion_energy_Surface(const Surface *s, const Vertex *v, const
         return 0;
 
     const FVector3 posv = v->getPosition();
-    FVector3 posvp_rel = metrics::relativePosition(vp->getPosition(), posv);
-    FVector3 posvn_rel = metrics::relativePosition(vn->getPosition(), posv);
+    FVector3 posvp_rel = meshRelativePosition(vp->getPosition(), posv);
+    FVector3 posvn_rel = meshRelativePosition(vn->getPosition(), posv);
 
     return lam * (posvp_rel.length() * count_vp + posvn_rel.length() * count_vn);
 }
@@ -149,12 +150,12 @@ static FVector3 Adhesion_force_Surface(const Surface *s, const Vertex *v, const 
     FVector3 force(0);
 
     if(count_vp > 0) {
-        const FVector3 posvp_rel = metrics::relativePosition(vp->getPosition(), v->getPosition());
+        const FVector3 posvp_rel = meshRelativePosition(vp->getPosition(), v->getPosition());
         if(!posvp_rel.isZero()) 
             force += posvp_rel.normalized() * count_vp;
     }
     if(count_vn > 0) {
-        const FVector3 posvn_rel = metrics::relativePosition(vn->getPosition(), v->getPosition());
+        const FVector3 posvn_rel = meshRelativePosition(vn->getPosition(), v->getPosition());
         if(!posvn_rel.isZero()) 
             force += posvn_rel.normalized() * count_vn;
     }

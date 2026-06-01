@@ -78,6 +78,7 @@ Mesh::Mesh() :
     nr_vertices{0}, 
     nr_surfaces{0}, 
     nr_bodies{0}, 
+    periodicGeometry{false},
     _quality{new MeshQuality()}
 {}
 
@@ -107,6 +108,7 @@ std::string Mesh::str() const {
     ss << "nr_vertices=" << this->nr_vertices << "(" << this->sizeVertices() << "), ";
     ss << "nr_surfaces=" << this->nr_surfaces << "(" << this->sizeSurfaces() << "), ";
     ss << "nr_bodies="   << this->nr_bodies   << "(" << this->sizeBodies()   << "), ";
+    ss << "periodic_geometry=" << (this->getPeriodicGeometry() ? "yes" : "no") << ", ";
     ss << "quality=" << (this->hasQuality() ? "yes" : "no");
     ss << ")";
 
@@ -974,6 +976,7 @@ namespace TissueForge::io {
         if(dataElement->hasQuality()) {
             TF_IOTOEASY(fileElement, metaData, "quality", dataElement->getQuality());
         }
+        TF_IOTOEASY(fileElement, metaData, "periodicGeometry", dataElement->getPeriodicGeometry());
 
         fileElement.get()->type = "Mesh";
 
@@ -1001,9 +1004,15 @@ namespace TissueForge::io {
         std::vector<TissueForge::models::vertex::Body*> bodies;
         TF_IOFROMEASY(fileElement, metaData, "bodies", &bodies);
 
-        // Get quality, if any
+        // Get mesh options and quality, if any
 
         IOChildMap fec = IOElement::children(fileElement);
+        auto _pgItr = fec.find("periodicGeometry");
+        if(_pgItr != fec.end()) {
+            bool periodicGeometry = false;
+            ::TissueForge::io::fromFile(_pgItr->second, metaData, &periodicGeometry);
+            dataElement->setPeriodicGeometry(periodicGeometry);
+        }
         if(fec.find("quality") != fec.end()) {
             TissueForge::models::vertex::MeshQuality quality;
             TF_IOFROMEASY(fileElement, metaData, "quality", &quality);

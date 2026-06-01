@@ -593,13 +593,12 @@ static std::set<int> rnr_bodyIds(Vertex *v) {
 }
 
 /**
- * Periodic-correct edge length (matches the sibling vertex-merge metric, which uses
- * metrics::relativePosition). The Python oracle uses a plain coordinate difference; the two
- * agree for reconnection edges, which are interior (far from the box wall), and
- * relativePosition is the physically-correct form for the eventual periodic use.
+ * Edge length under the mesh-level periodic geometry convention. The Python oracle uses a
+ * plain coordinate difference in finite-cluster tests; when periodic geometry is enabled this
+ * becomes the minimum-image length needed for bulk periodic meshes.
  */
 static FloatP_t rnr_edgeLength(Vertex *a, Vertex *b) {
-    return metrics::relativePosition(a->getPosition(), b->getPosition()).length();
+    return meshRelativePosition(a->getPosition(), b->getPosition()).length();
 }
 
 /** True iff va, vb are consecutive (cyclically) in `s`'s vertex ring (topology.is_consecutive). */
@@ -1024,16 +1023,16 @@ static bool rnr_placeIToH(const RNR_IConfig &cfg, const FloatP_t &dlTh, std::arr
     if(cfg.arms.size() != 3) return false;
 
     const FVector3 p10 = cfg.v10->getPosition();
-    const FVector3 p11 = cfg.v11->getPosition();
-    const FVector3 r0 = (p10 + p11) * 0.5;                 // Eq. 50: edge midpoint
-    const FVector3 uT = rnr_unit(p10 - p11);               // Eq. 49: edge axis
+    const FVector3 p11 = meshPositionNear(cfg.v11->getPosition(), p10);
+    const FVector3 r0 = p10 + (p11 - p10) * 0.5;           // Eq. 50: edge midpoint
+    const FVector3 uT = rnr_unit(meshRelativePosition(p10, p11)); // Eq. 49: edge axis
     if(uT.isZero()) return false;
 
     std::array<FVector3, 3> vproj;
     for(size_t i = 0; i < cfg.arms.size(); i++) {
         const RNR_Arm &a = cfg.arms[i];
-        const FVector3 dTop = rnr_unit(a.outerTop->getPosition() - r0);
-        const FVector3 dBot = rnr_unit(a.outerBot->getPosition() - r0);
+        const FVector3 dTop = rnr_unit(meshRelativePosition(a.outerTop->getPosition(), r0));
+        const FVector3 dBot = rnr_unit(meshRelativePosition(a.outerBot->getPosition(), r0));
         const FVector3 w = (dTop + dBot) * 0.5;            // Eqs. 54-56
         vproj[i] = w - uT * w.dot(uT);                    // Eqs. 51-53: project off edge
     }
@@ -1045,7 +1044,7 @@ static bool rnr_placeIToH(const RNR_IConfig &cfg, const FloatP_t &dlTh, std::arr
     if(lMax == 0) lMax = 1;
 
     for(size_t i = 0; i < vproj.size(); i++)
-        out[i] = r0 + vproj[i] * (dlTh / lMax);            // Eqs. 46-48
+        out[i] = meshWrapPosition(r0 + vproj[i] * (dlTh / lMax)); // Eqs. 46-48
     return true;
 }
 
@@ -1055,8 +1054,8 @@ static bool rnr_placeHToI(const RNR_HConfig &cfg, const FloatP_t &dlTh, FVector3
 
     std::array<FVector3, 3> p = {
         cfg.arms[0].triVertex->getPosition(),
-        cfg.arms[1].triVertex->getPosition(),
-        cfg.arms[2].triVertex->getPosition()
+        meshPositionNear(cfg.arms[1].triVertex->getPosition(), cfg.arms[0].triVertex->getPosition()),
+        meshPositionNear(cfg.arms[2].triVertex->getPosition(), cfg.arms[0].triVertex->getPosition())
     };
     const FVector3 r0 = (p[0] + p[1] + p[2]) / 3.0;        // Eq. 45: triangle centroid
     FVector3 n = rnr_unit(Magnum::Math::cross(p[1] - p[0], p[2] - p[0])); // Eq. 44
@@ -1064,14 +1063,14 @@ static bool rnr_placeHToI(const RNR_HConfig &cfg, const FloatP_t &dlTh, FVector3
 
     FVector3 topMean(0);
     for(auto &a : cfg.arms)
-        topMean += a.outerTop->getPosition();
+        topMean += meshPositionNear(a.outerTop->getPosition(), r0);
     topMean /= (FloatP_t)cfg.arms.size();
     if((topMean - r0).dot(n) < 0)
         n = n * -1;
 
     const FloatP_t half = 0.5 * dlTh;
-    p10 = r0 + n * half;                                   // Eq. 42
-    p11 = r0 - n * half;                                   // Eq. 43
+    p10 = meshWrapPosition(r0 + n * half);                 // Eq. 42
+    p11 = meshWrapPosition(r0 - n * half);                 // Eq. 43
     return true;
 }
 
@@ -1580,7 +1579,7 @@ static HRESULT MeshQuality_constructOperationsVertex(
             if(v->objectId() < nv->objectId()) {
 
                 FVector3 nvpos = nv->getPosition();
-                FVector3 nvrelPos = metrics::relativePosition(vpos, nvpos);
+                FVector3 nvrelPos = meshRelativePosition(vpos, nvpos);
                 FloatP_t nvdist2 = nvrelPos.dot();
                 if(nvdist2 < vertexMergeDist2) {
                     TF_Log(LOG_TRACE) << v->objectId() << ", " << nv->objectId() << ", " << nvrelPos;
@@ -1648,7 +1647,7 @@ static HRESULT MeshQuality_constructOperationsSurface(
         FloatP_t nbsSearchDist2 = 0;
         FVector3 centroid = s->getCentroid();
         for(auto &v : s->getVertices()) {
-            FloatP_t thisVertDist2 = (centroid - v->getPosition()).dot();
+            FloatP_t thisVertDist2 = meshRelativePosition(centroid, v->getPosition()).dot();
             if(thisVertDist2 > nbsSearchDist2) 
                 nbsSearchDist2 = thisVertDist2;
         }
