@@ -21,6 +21,7 @@
 
 #include <models/vertex/solver/tfSurface.h>
 #include <models/vertex/solver/tfVertex.h>
+#include <models/vertex/solver/tf_mesh_metrics.h>
 
 #include <tfEngine.h>
 #include <io/tfFIO.h>
@@ -31,15 +32,24 @@ using namespace TissueForge::models::vertex;
 
 
 FloatP_t FlatSurfaceConstraint::energy(const Surface *source, const Vertex *target) {
-    FloatP_t _e = (source->getCentroid() - target->getPosition()).dot(source->getNormal());
-    
+    // Use the minimum-image displacement from the vertex to the surface centroid so
+    // that surfaces straddling a periodic box wall are not seen as wildly non-planar
+    // (raw centroid - position would be ~box-sized for a wrap face). Reduces to the
+    // plain difference when mesh periodic geometry is disabled.
+    FloatP_t _e = meshRelativePosition(source->getCentroid(), target->getPosition()).dot(source->getNormal());
+
     return target->getCachedParticleMass() / 2.f / _Engine.dt * lam * _e * _e;
 }
 
 FVector3 FlatSurfaceConstraint::force(const Surface *source, const Vertex *target) {
     FVector3 sn = source->getNormal();
-    
-    return (sn * ((source->getCentroid() - target->getPosition()).dot(sn))) * target->getCachedParticleMass() / _Engine.dt * lam;
+
+    // Minimum-image centroid offset (see energy()): the raw centroid - position is
+    // box-spanning for surfaces that wrap a periodic boundary, producing a spurious
+    // ~1/dt force that inverts cells. meshRelativePosition is the no-op identity when
+    // mesh periodic geometry is off, preserving finite-cluster behavior.
+    const FVector3 d = meshRelativePosition(source->getCentroid(), target->getPosition());
+    return (sn * (d.dot(sn))) * target->getCachedParticleMass() / _Engine.dt * lam;
 }
 
 namespace TissueForge::io { 
