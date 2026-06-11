@@ -77,8 +77,19 @@ namespace TissueForge::models::vertex {
         /** current surface area */
         FloatP_t area;
 
-        /** current volume */
+        /** current volume (always >= 0 when orientation repair is enabled; the
+         *  winding parity is carried separately by orientSign) */
         FloatP_t volume;
+
+        /** Orientation parity of the cell's signed volume: +1 normally, -1 when the
+         *  raw signed volume came out negative (a transient eversion, e.g. a noise or
+         *  post-reconnection overshoot throwing a vertex through a near-degenerate
+         *  face). getVolume() then returns |volume| and the VolumeConstraint force
+         *  multiplies by this sign so it stays restoring instead of running away into
+         *  inflation. Faithful port of 3DVertVor's per-cell polygonDirections_ flip
+         *  (oracle stabilizer #3, Cell.cpp:216-221): flipping every face direction
+         *  together is exactly negating this single per-body sign. */
+        FloatP_t orientSign;
 
         /** mass density */
         FloatP_t density;
@@ -260,6 +271,13 @@ namespace TissueForge::models::vertex {
          * @brief Get the volume
          */
         const FloatP_t& getVolume() const { return volume; }
+
+        /**
+         * @brief Orientation parity (+1 / -1) of the signed volume; see orientSign.
+         * Consumed by the VolumeConstraint force so it stays restoring through a
+         * transient eversion (oracle stabilizer #3).
+         */
+        FloatP_t getVolumeOrientSign() const { return orientSign; }
 
         /**
          * @brief Get the mass

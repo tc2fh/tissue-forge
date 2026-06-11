@@ -35,9 +35,28 @@
 #include <Magnum/Math/Math.h>
 #include <Magnum/Math/Intersection.h>
 
+#include <cstdlib>
+
 
 using namespace TissueForge;
 using namespace TissueForge::models::vertex;
+
+
+// Faithful orientation repair (oracle stabilizer #3; 3DVertVor Cell.cpp:216-221).
+// When a cell's signed volume goes negative -- a transient eversion from a noise or
+// post-reconnection displacement overshoot throwing a vertex past a near-degenerate
+// face -- report |volume| and remember a per-body orientation sign so the
+// VolumeConstraint force stays restoring instead of inverting and inflating the cell.
+// Enabled by default; set TF_VERTEX_NO_VOLUME_REPAIR=1 to fall back to stock signed
+// volume (used only by the load-bearing gate test that proves this repair is what
+// holds the noisy reconnecting sort together).
+static bool _volumeOrientationRepairEnabled() {
+    static const bool enabled = [](){
+        const char *e = std::getenv("TF_VERTEX_NO_VOLUME_REPAIR");
+        return !(e && e[0] == '1');
+    }();
+    return enabled;
+}
 
 
 #define Body_GETMESH(name, retval)                  \
@@ -96,6 +115,7 @@ Body::Body() :
     centroid{0.f},
     area{0.f},
     volume{0.f},
+    orientSign{1.f},
     density{0.f},
     typeId{-1},
     species{NULL}
@@ -197,6 +217,16 @@ void Body::updateInternals() {
         }
         else
             volume += s->getVolumeContr(this);
+    }
+
+    // orientation repair (oracle stabilizer #3): keep volume >= 0 and cache its
+    // winding parity so the VolumeConstraint force stays restoring through a
+    // transient eversion -- a faithful per-body analogue of flipping every
+    // polygonDirections_ together (3DVertVor Cell.cpp:216-221).
+    orientSign = 1.f;
+    if(_volumeOrientationRepairEnabled() && volume < 0.f) {
+        orientSign = -1.f;
+        volume = -volume;
     }
 
 }
@@ -390,6 +420,13 @@ HRESULT Body::positionChanged() {
         }
         else
             volume += s->getVolumeContr(this);
+    }
+
+    // orientation repair (oracle stabilizer #3): see updateInternals() above.
+    orientSign = 1.f;
+    if(_volumeOrientationRepairEnabled() && volume < 0.f) {
+        orientSign = -1.f;
+        volume = -volume;
     }
 
     return S_OK;

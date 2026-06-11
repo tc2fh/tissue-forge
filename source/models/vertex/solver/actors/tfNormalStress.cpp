@@ -46,8 +46,8 @@ FVector3 NormalStress::force(const Surface *source, const Vertex *target) {
         return FVector3(0);
 
     snormal = snormal.normalized();
-    if(bodies.size() == 1) 
-        snormal *= source->volumeSense(bodies[0]);
+    if(bodies.size() == 1)
+        snormal *= source->volumeSense(bodies[0]) * bodies[0]->getVolumeOrientSign();
 
     return snormal * mag * source->getVertexArea(target);
 }

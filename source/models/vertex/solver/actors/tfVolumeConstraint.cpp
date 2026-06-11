@@ -57,7 +57,10 @@ FVector3 VolumeConstraint::force(const Body *source, const Vertex *target) {
         ) * s->volumeSense(source);
     }
 
-    return ftotal * (lam * (constr - source->getVolume()) / 3.f);
+    // orientSign keeps the gradient pointing the restoring way when getVolume() has
+    // been abs'd through a transient eversion (oracle stabilizer #3; faithful analogue
+    // of 3DVertVor applying the flipped polygonDirections_ in its volume force).
+    return ftotal * source->getVolumeOrientSign() * (lam * (constr - source->getVolume()) / 3.f);
 }
 
 namespace TissueForge::io {
