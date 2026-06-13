@@ -32,6 +32,7 @@
 #include <atomic>
 #include <future>
 #include <typeinfo>
+#include <cmath>
 
 
 #define TF_MESHSOLVER_CHECKINIT_RET(retval) { if(!_solver) return retval; }
@@ -72,17 +73,33 @@ HRESULT TissueForge::models::vertex::VertexForce(const Vertex *v, FloatP_t *f) {
     // Bodies
     tid = -1;
     BodyType *btype;
+    FVector3 dirSum(0.f);
+    int nIncident = 0;
     for(auto &b : v->getBodies()) {
         if(b->typeId != tid) {
             tid = b->typeId;
             btype = b->type();
         }
-        for(auto &a : btype->actors) 
+        for(auto &a : btype->actors)
             force += a->force(b, v);
 
-        for(auto &a : b->actors) 
+        for(auto &a : b->actors)
             force += a->force(b, v);
+
+        dirSum += b->getDirector();
+        nIncident++;
     }
+
+    // Native active self-propulsion (PORTING_NOTES §6o): add a per-vertex active force
+    // v0 * <incident-cell directors>. In the overdamped vertex integrator (mobility
+    // mu = 1, density = 0 => unit mass) this produces displacement dt*v0*<director> --
+    // exactly the 3DVertVor/Manning oracle's dt*motility (Run.cpp:1345), applied
+    // alongside the deterministic forces. Re-derived from the active model (memory
+    // active-motility-not-thermal-noise); nothing copied from the GPL source. No-op when
+    // the drive is off (v0 = 0, the default), so non-motile runs are unaffected.
+    const FloatP_t v0 = MeshSolver::getMotilityV0();
+    if(v0 > 0.f && nIncident > 0)
+        force += dirSum * (v0 / FloatP_t(nIncident));
 
     f[0] += force[0];
     f[1] += force[1];
@@ -350,6 +367,52 @@ unsigned int MeshSolver::sizeBodies() {
     return _solver->mesh->sizeBodies();
 }
 
+HRESULT MeshSolver::setMotility(const FloatP_t &v0, const FloatP_t &Dr, const int &seed) {
+    TF_MESHSOLVER_CHECKINIT
+
+    _solver->_motilityV0 = v0;
+    _solver->_motilityDr = Dr;
+
+    if(seed >= 0) {
+        _solver->_motilityRng.seed((std::mt19937::result_type)seed);
+        _solver->_motilitySeeded = true;
+    } else if(!_solver->_motilitySeeded) {
+        _solver->_motilityRng.seed((std::mt19937::result_type)0);
+        _solver->_motilitySeeded = true;
+    }
+
+    // Seed every cell's director random-on-S^2 when the drive is (re)enabled -- mirrors
+    // the Python harness initializing _dirs once before stepping. Re-derived from the
+    // active model (memory active-motility-not-thermal-noise); nothing copied from GPL.
+    if(v0 > 0.f && _solver->mesh) {
+        std::normal_distribution<FloatP_t> ndist(0.f, 1.f);
+        Mesh *m = _solver->mesh;
+        const unsigned int nb = m->sizeBodies();
+        for(unsigned int bi = 0; bi < nb; bi++) {
+            Body *b = m->getBody(bi);
+            if(!b || b->objectId() < 0)
+                continue;
+            b->setDirector(FVector3(ndist(_solver->_motilityRng),
+                                    ndist(_solver->_motilityRng),
+                                    ndist(_solver->_motilityRng)));
+        }
+    }
+
+    return S_OK;
+}
+
+FloatP_t MeshSolver::getMotilityV0() {
+    TF_MESHSOLVER_CHECKINIT_RET(0)
+
+    return _solver->_motilityV0;
+}
+
+FloatP_t MeshSolver::getMotilityDr() {
+    TF_MESHSOLVER_CHECKINIT_RET(0)
+
+    return _solver->_motilityDr;
+}
+
 HRESULT MeshSolver::_positionChangedInst() {
 
     _surfaceVertices = 0;
@@ -459,8 +522,38 @@ HRESULT MeshSolver::preStepStart() {
     }
     memset(_solver->_forces, 0.f, 3 * sizeof(FloatP_t) * _bufferSize);
 
-    if(_totalVertices == 0) 
+    if(_totalVertices == 0)
         return S_OK;
+
+    // Native active-motility drive (PORTING_NOTES §6o): once per step, BEFORE forces,
+    // evolve every cell's director by active-Brownian rotational diffusion. The
+    // resulting per-vertex active force v0 * <incident-cell directors> is added in
+    // VertexForce below, which reads these freshly updated directors. This loop is
+    // serial with a dedicated seeded RNG (reproducible); the parallel force loop that
+    // follows only reads the directors, so there is no data race. v0 = 0 => skipped.
+    if(_motilityV0 > 0.f) {
+        const FloatP_t dt = (FloatP_t)_Engine.dt;
+        const FloatP_t rotStd = std::sqrt(FloatP_t(2.0) * _motilityDr * dt);
+        std::normal_distribution<FloatP_t> ndist(0.f, 1.f);
+        const unsigned int nb = mesh->sizeBodies();
+        for(unsigned int bi = 0; bi < nb; bi++) {
+            Body *b = mesh->getBody(bi);
+            if(!b || b->objectId() < 0)
+                continue;
+            FVector3 n = b->getDirector();
+            if(n.dot(n) < FloatP_t(1e-12))   // lazily seed an unset director
+                n = FVector3(ndist(_motilityRng), ndist(_motilityRng), ndist(_motilityRng));
+            // n <- normalize(n + sqrt(2 Dr dt)(xi - n)), xi ~ uniform on S^2. This is the
+            // ONLY sqrt(dt) term -- on ORIENTATION, not position; per-step displacement
+            // stays dt*v0 (sub-Lth). Re-derived from the active model, not GPL-copied.
+            FVector3 xi(ndist(_motilityRng), ndist(_motilityRng), ndist(_motilityRng));
+            const FloatP_t xilen = xi.length();
+            if(xilen > FloatP_t(1e-9))
+                xi /= xilen;
+            n = n + (xi - n) * rotStd;
+            b->setDirector(n);   // setDirector normalizes (matches the harness's _dirs /= norm)
+        }
+    }
 
     Vertex *m_vertices = &(*mesh->vertices)[0];
     FloatP_t *v_forces = &_forces[0];

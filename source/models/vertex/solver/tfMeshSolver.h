@@ -33,6 +33,8 @@
 #include <tfSubEngine.h>
 #include <tf_cycle.h>
 
+#include <random>
+
 
 namespace TissueForge::models::vertex { 
 
@@ -295,6 +297,30 @@ namespace TissueForge::models::vertex {
          */
         static HRESULT update(const bool &_force=false);
 
+        /**
+         * @brief Set the native active self-propulsion (motility) drive.
+         *
+         * Enables a per-cell director (active-Brownian rotational diffusion at rate
+         * @p Dr) and a per-vertex active force v0 * <incident-cell directors>, which
+         * reproduces the 3DVertVor/Manning active-motility model natively
+         * (PORTING_NOTES §6o; memory active-motility-not-thermal-noise) instead of the
+         * Python harness's add_noise_active injection. In the overdamped vertex
+         * integrator (mobility mu = 1) the per-step displacement is dt * v0 * <director>,
+         * which is sub-Lth by construction, so reconnection is caught with no clamp.
+         * v0 = 0 disables the drive (the default), leaving existing runs unchanged.
+         *
+         * @param v0 active self-propulsion speed (the oracle's "temperature"); 0 = off
+         * @param Dr rotational diffusion coefficient of the directors (oracle: 1)
+         * @param seed RNG seed for reproducible directors; < 0 keeps the current stream
+         */
+        static HRESULT setMotility(const FloatP_t &v0, const FloatP_t &Dr=1.0, const int &seed=-1);
+
+        /** @brief Get the active self-propulsion speed (0 = motility off) */
+        static FloatP_t getMotilityV0();
+
+        /** @brief Get the director rotational diffusion coefficient */
+        static FloatP_t getMotilityDr();
+
         HRESULT preStepStart() override;
         HRESULT preStepJoin() override;
         HRESULT postStepStart() override;
@@ -346,6 +372,13 @@ namespace TissueForge::models::vertex {
 
         std::vector<BodyType*> _bodyTypes;
         std::vector<SurfaceType*> _surfaceTypes;
+
+        /** Native active self-propulsion drive (PORTING_NOTES §6o). _motilityV0 = 0
+         *  means the drive is off (default), so existing runs are unaffected. */
+        FloatP_t _motilityV0 = 0.f;
+        FloatP_t _motilityDr = 1.f;
+        std::mt19937 _motilityRng;
+        bool _motilitySeeded = false;
 
         /** Reduce internal buffers and storage */
         HRESULT _compactInst();

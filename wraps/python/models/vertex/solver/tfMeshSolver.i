@@ -48,6 +48,9 @@
 %rename(position_changed) TissueForge::models::vertex::MeshSolver::positionChanged;
 %rename(get_log) TissueForge::models::vertex::MeshSolver::getLog;
 %rename(is_3d) TissueForge::models::vertex::MeshSolver::is3D;
+%rename(set_motility) TissueForge::models::vertex::MeshSolver::setMotility;
+%rename(get_motility_v0) TissueForge::models::vertex::MeshSolver::getMotilityV0;
+%rename(get_motility_dr) TissueForge::models::vertex::MeshSolver::getMotilityDr;
 
 %rename(_vertex_solver_MeshSolver) TissueForge::models::vertex::MeshSolver;
 %rename(_vertex_solver_MeshSolverTimers) TissueForge::models::vertex::MeshSolverTimers;

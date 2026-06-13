@@ -139,6 +139,15 @@ vertex_solver_MeshObjType_extend_py(TissueForge::models::vertex::BodyType)
             return self.getVolume()
 
         @property
+        def director(self):
+            """active-motility director (unit vector); see MeshSolver.set_motility"""
+            return self.getDirector()
+
+        @director.setter
+        def director(self, d):
+            self.setDirector(d)
+
+        @property
         def mass(self):
             """mass of the body"""
             return self.getMass()
@@ -231,6 +240,15 @@ vertex_solver_MeshObjType_extend_py(TissueForge::models::vertex::BodyType)
         def volume(self):
             """volume of the body"""
             return self.getVolume()
+
+        @property
+        def director(self):
+            """active-motility director (unit vector); see MeshSolver.set_motility"""
+            return self.getDirector()
+
+        @director.setter
+        def director(self, d):
+            self.setDirector(d)
 
         @property
         def mass(self):

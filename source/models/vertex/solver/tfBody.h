@@ -91,6 +91,15 @@ namespace TissueForge::models::vertex {
          *  together is exactly negating this single per-body sign. */
         FloatP_t orientSign;
 
+        /** Per-cell self-propulsion director (unit vector) for the native active-motility
+         *  drive (Phase 3, PORTING_NOTES §6o). Evolves by active-Brownian rotational
+         *  diffusion once per step in MeshSolver::preStepStart and is consumed as a
+         *  per-vertex active force v0*<incident-cell directors> in VertexForce. The value
+         *  {0,0,0} means "unset" -- it is lazily seeded random-on-S^2 when motility is
+         *  first enabled. Re-derived from the 3DVertVor/Manning active model (memory
+         *  active-motility-not-thermal-noise); nothing copied from the GPL source. */
+        FVector3 director;
+
         /** mass density */
         FloatP_t density;
 
@@ -278,6 +287,20 @@ namespace TissueForge::models::vertex {
          * transient eversion (oracle stabilizer #3).
          */
         FloatP_t getVolumeOrientSign() const { return orientSign; }
+
+        /**
+         * @brief Get the active-motility director (unit vector; {0,0,0} when unset).
+         * See MeshSolver::setMotility / preStepStart and PORTING_NOTES §6o.
+         */
+        const FVector3& getDirector() const { return director; }
+
+        /**
+         * @brief Set the active-motility director. Stored normalized (a zero vector is
+         * left as the {0,0,0} "unset" sentinel).
+         *
+         * @param _director director (need not be unit length)
+         */
+        HRESULT setDirector(const FVector3 &_director);
 
         /**
          * @brief Get the mass
@@ -536,6 +559,18 @@ namespace TissueForge::models::vertex {
          * @brief Get the volume
          */
         FloatP_t getVolume() const;
+
+        /**
+         * @brief Get the active-motility director (unit vector; {0,0,0} when unset).
+         */
+        FVector3 getDirector() const;
+
+        /**
+         * @brief Set the active-motility director (stored normalized).
+         *
+         * @param _director director (need not be unit length)
+         */
+        HRESULT setDirector(const FVector3 &_director);
 
         /**
          * @brief Get the mass

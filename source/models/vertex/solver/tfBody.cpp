@@ -116,11 +116,18 @@ Body::Body() :
     area{0.f},
     volume{0.f},
     orientSign{1.f},
+    director{0.f},
     density{0.f},
     typeId{-1},
     species{NULL}
 {
     MESHOBJ_INITOBJ
+}
+
+HRESULT Body::setDirector(const FVector3 &_director) {
+    const FloatP_t len = _director.length();
+    director = len > FloatP_t(1e-9) ? _director / len : FVector3(0.f);
+    return S_OK;
 }
 
 Body::~Body() {
@@ -1060,6 +1067,16 @@ FloatP_t BodyHandle::getArea() const {
 FloatP_t BodyHandle::getVolume() const {
     BodyHandle_GETOBJ(o, 0);
     return o->getVolume();
+}
+
+FVector3 BodyHandle::getDirector() const {
+    BodyHandle_GETOBJ(o, FVector3());
+    return o->getDirector();
+}
+
+HRESULT BodyHandle::setDirector(const FVector3 &_director) {
+    BodyHandle_GETOBJ(o, E_FAIL);
+    return o->setDirector(_director);
 }
 
 FloatP_t BodyHandle::getMass() const {
