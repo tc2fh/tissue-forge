@@ -68,7 +68,18 @@ static Magnum::GL::AbstractFramebuffer *getFrameBuffer() {
     return &sim->app->framebuffer();
 }
 
-typedef Corrade::Containers::Array<char> (*imgCnv_t)(ImageView2D);
+// NOTE: this signature MUST match the real converter functions in
+// tfImageConverters.h, which all take `const ImageView2D&` (by reference). It used
+// to be `(*)(ImageView2D)` (by value); the by-reference converters were then
+// C-cast to this incompatible by-value type and called through it -- undefined
+// behavior (a >16-byte struct passed by value vs. by reference are different
+// calling conventions on the SysV AMD64 ABI). On linux-64 that UB made the callee
+// read a garbage ImageView size (width 0), so every screenshot format EXCEPT jpeg
+// aborted in Trade::AbstractImageConverter::convertToData() with a zero-size image.
+// jpeg survived only because it was passed via a by-value lambda that happened to
+// match the old typedef. Keeping the typedef by-reference makes all the casts
+// below exact, no-op conversions. See PORTING_NOTES.md.
+typedef Corrade::Containers::Array<char> (*imgCnv_t)(const ImageView2D&);
 typedef Corrade::Containers::Array<char> (*imgGen_t)();
 
 Corrade::Containers::Array<char> getImageData(imgCnv_t imgCnv, const PixelFormat &format) {
@@ -86,7 +97,7 @@ Corrade::Containers::Array<char> getImageData(imgCnv_t imgCnv, const PixelFormat
 }
 
 Corrade::Containers::Array<char> rendering::JpegImageData() {
-    return getImageData((imgCnv_t)[](ImageView2D image) { return convertImageDataToJpeg(image, 100); }, PixelFormat::RGB8Unorm);
+    return getImageData((imgCnv_t)[](const ImageView2D& image) { return convertImageDataToJpeg(image, 100); }, PixelFormat::RGB8Unorm);
 }
 
 Corrade::Containers::Array<char> rendering::BMPImageData() {
