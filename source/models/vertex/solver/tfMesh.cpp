@@ -257,8 +257,16 @@ HRESULT Mesh::incrementBodies(const size_t &numIncr) {
 }
 
 HRESULT Mesh::allocateVertex(Vertex **obj) {
-    // Check for available space; reallocate and reassign throughout if necessary
-    if(vertexIdsAvail.empty() && incrementVertices() != S_OK) {
+    // Check for available space; reallocate and reassign throughout if necessary.
+    // GEOMETRIC growth (double, not a fixed +TFMESHINV_INCR): incrementVertices copies the whole
+    // vertex vector and reassigns every surface/vertex pointer into it (O(N) per grow). Growing by
+    // a fixed +100 => N/100 such grows => O(N^2) bulk builds. Growing by the current size makes the
+    // total grow-work a geometric series (~2N) => amortized O(N). Free ids are still appended as a
+    // contiguous range and handed out smallest-first, so per-element create ordering/ids are
+    // unchanged (foams stay bit-identical). Reactive single-allocate path only; the batch/ensure
+    // paths pass an explicit numIncr and are untouched.
+    if(vertexIdsAvail.empty() &&
+       incrementVertices(vertices->size() > TFMESHINV_INCR ? vertices->size() : (size_t)TFMESHINV_INCR) != S_OK) {
         TF_Log(LOG_ERROR);
         return E_FAIL;
     }
@@ -273,8 +281,11 @@ HRESULT Mesh::allocateVertex(Vertex **obj) {
 }
 
 HRESULT Mesh::allocateSurface(Surface **obj) {
-    // Check for available space; reallocate and reassign throughout if necessary
-    if(surfaceIdsAvail.empty() && incrementSurfaces() != S_OK) {
+    // Check for available space; reallocate and reassign throughout if necessary.
+    // GEOMETRIC growth -- see allocateVertex for the O(N^2)->O(N) rationale (this is the surface
+    // pool, the dominant build cost once vertex create is batched: O(nsurf/100) grows each O(N)).
+    if(surfaceIdsAvail.empty() &&
+       incrementSurfaces(surfaces->size() > TFMESHINV_INCR ? surfaces->size() : (size_t)TFMESHINV_INCR) != S_OK) {
         TF_Log(LOG_ERROR);
         return E_FAIL;
     }
@@ -289,8 +300,10 @@ HRESULT Mesh::allocateSurface(Surface **obj) {
 }
 
 HRESULT Mesh::allocateBody(Body **obj) {
-    // Check for available space; reallocate and reassign throughout if necessary
-    if(bodyIdsAvail.empty() && incrementBodies() != S_OK) {
+    // Check for available space; reallocate and reassign throughout if necessary.
+    // GEOMETRIC growth -- see allocateVertex for the O(N^2)->O(N) rationale.
+    if(bodyIdsAvail.empty() &&
+       incrementBodies(bodies->size() > TFMESHINV_INCR ? bodies->size() : (size_t)TFMESHINV_INCR) != S_OK) {
         TF_Log(LOG_ERROR);
         return E_FAIL;
     }
