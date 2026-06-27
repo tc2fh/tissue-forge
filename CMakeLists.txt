@@ -77,6 +77,7 @@ option(TF_VECTORIZE_INTEGRATOR "Enable vector integrator  (AVX instructions)" OF
 option(TF_ENABLE_AVX2          "Enable AVX2 instructions" OFF)
 option(TF_ENABLE_AVX           "Enable AVX  instructions" ON)
 option(TF_ENABLE_SSE4          "Enable SSE4 instructions" ON)
+option(TF_VERTEX_RNR_DEBUG     "Expose native RNR (vertex-model I<->H reconnection) debug/diagnostic MeshQuality entry points (force_reconnect_*, analyze_*, find_reconnection_candidates) to C++ and Python. OFF gives a knobs-only production surface." ON)
 
 # Currently controls flux storage size; this will need modified when SIMD instructions are implemented
 set(TF_SIMD_SIZE 8)

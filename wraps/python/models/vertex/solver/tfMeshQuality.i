@@ -98,8 +98,10 @@
 
         @property
         def reconnect_energy_gate(self) -> bool:
-            """Whether to reject reconnections that raise local heterotypic energy (a DEPARTURE
-            from Okuda's geometric trigger; an instability driver). Default False."""
+            """EXPERIMENTAL (research toggle; not part of the faithful model). When True, reject a
+            reconnection that raises local heterotypic interfacial energy (a greedy/T=0 gate). This
+            departs from the purely geometric Okuda trigger and can drive instability; the validated
+            reconnection path leaves it False (the default)."""
             return self.getReconnectEnergyGate()
 
         @reconnect_energy_gate.setter
@@ -108,9 +110,10 @@
 
         @property
         def stock_quality_operations(self) -> bool:
-            """Whether the legacy non-RNR MeshQuality operations are enabled. Set False to run
-            native reconnection in isolation through do_quality(). Default True preserves stock
-            TissueForge behavior."""
+            """Master flag for the stock (non-RNR) MeshQuality passes (vertex merge/split, surface
+            demote + collision, body demote). Default True preserves stock TissueForge behavior; set
+            False to run native reconnection in isolation. Each pass is additionally gated by its
+            per-pass flag below (a pass runs only if this AND its per-pass flag are True)."""
             return self.getStockQualityOps()
 
         @stock_quality_operations.setter
@@ -118,17 +121,55 @@
             self.setStockQualityOps(_val)
 
         @property
+        def stock_vertex_operations(self) -> bool:
+            """Whether the stock vertex pass (merge/split) runs (with stock_quality_operations)."""
+            return self.getStockVertexOps()
+
+        @stock_vertex_operations.setter
+        def stock_vertex_operations(self, _val: bool):
+            self.setStockVertexOps(_val)
+
+        @property
+        def stock_surface_operations(self) -> bool:
+            """Whether the stock surface pass (demote + 2D collision) runs (with
+            stock_quality_operations). The collision sub-step is also gated by collision_2d."""
+            return self.getStockSurfaceOps()
+
+        @stock_surface_operations.setter
+        def stock_surface_operations(self, _val: bool):
+            self.setStockSurfaceOps(_val)
+
+        @property
+        def stock_body_operations(self) -> bool:
+            """Whether the stock body pass (body->vertex demotion) runs (with
+            stock_quality_operations). Default True preserves stock behavior, but the body-demotion
+            collapse is NOT robust on finite (free-surface) blocks: when a cell's volume falls below
+            body_demote_volume the degenerate collapse can cascade and crash. A vertex model driving
+            topology change through the native RNR reconnection should set this False to coexist
+            safely with the stock vertex/surface passes."""
+            return self.getStockBodyOps()
+
+        @stock_body_operations.setter
+        def stock_body_operations(self, _val: bool):
+            self.setStockBodyOps(_val)
+
+        @property
         def reconnect_interval(self) -> int:
             """Reconnection throttle: the native reconnection pass runs only every
-            reconnect_interval-th do_quality() call (the 3DVertVor oracle's dtr; oracle reconnects
-            every 10*dt). Larger = more stable but slower sorting; 1 = every step (default). Values
-            < 1 are treated as 1."""
+            reconnect_interval-th do_quality() call. Larger values let the mesh relax between
+            reconnections (more stable, slower sorting); 1 = every step (default). Values < 1 are
+            treated as 1."""
             return self.getReconnectInterval()
 
         @reconnect_interval.setter
         def reconnect_interval(self, _val: int):
             self.setReconnectInterval(_val)
+    %}
 
+#ifdef TF_VERTEX_RNR_DEBUG
+    // RNR diagnostic / debug entry points: gated behind TF_VERTEX_RNR_DEBUG (default ON in dev
+    // builds; a knobs-only production build sets it OFF and these are absent from the Python API).
+    %pythoncode %{
         def analyze_i_reconnection(self, v10_id: int, v11_id: int) -> dict:
             """Diagnostic (read-only): the native I->H neighborhood walk + Condition-4 veto for
             the short edge (v10_id, v11_id) on the current mesh -- the C++ port of
@@ -169,7 +210,10 @@
             quality passes; returns `{ok, reason, new_surface_id, new_vertex_ids}`."""
             import json
             return json.loads(self.forceReconnectHToI(triangle_id))
+    %}
+#endif // TF_VERTEX_RNR_DEBUG
 
+    %pythoncode %{
         @property
         def collision_2d(self) -> bool:
             """Whether 2D collisions are implemented"""

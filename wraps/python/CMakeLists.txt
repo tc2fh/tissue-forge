@@ -39,6 +39,12 @@ if(TF_APPLE)
   list(APPEND SWIG_COMPILEDEFS_PY CORRADE_TARGET_APPLE)
 endif()
 
+# Mirror the C++ TF_VERTEX_RNR_DEBUG gate into SWIG's preprocessor so the gated RNR debug entry
+# points are wrapped (or omitted) consistently with the compiled library.
+if(TF_VERTEX_RNR_DEBUG)
+  list(APPEND SWIG_COMPILEDEFS_PY TF_VERTEX_RNR_DEBUG)
+endif()
+
 if(MSVC)
   add_definitions(/bigobj)
 endif()
@@ -91,6 +97,11 @@ macro(TF_BUILD_PY_LIB main_source target_name output_py_name output_subdir)
   swig_add_library(${target_name} TYPE SHARED LANGUAGE python SOURCES ${main_source} $<TARGET_OBJECTS:TissueForge_obj>)
 
   target_compile_definitions(${target_name} PRIVATE C_BUILDING_DLL)
+  if(TF_VERTEX_RNR_DEBUG)
+    # The generated SWIG wrapper includes tfMeshQuality.h, whose RNR debug-method declarations are
+    # gated on TF_VERTEX_RNR_DEBUG; the wrapper .cxx must compile with the same definition.
+    target_compile_definitions(${target_name} PRIVATE TF_VERTEX_RNR_DEBUG)
+  endif()
 
   set_target_properties(${target_name} PROPERTIES
     CXX_VISIBILITY_PRESET hidden

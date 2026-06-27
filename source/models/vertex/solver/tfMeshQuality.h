@@ -262,15 +262,34 @@ namespace TissueForge::models::vertex {
         bool reconnectEnergyGate;
 
         /**
-         * Flag for whether stock quality operations are enabled.
+         * Master flag for whether the stock (non-RNR) quality operations are enabled.
          *
-         * These are TissueForge's pre-existing vertex split/merge, surface/body demote, and
-         * 2D collision repair passes. They remain enabled by default to preserve historical
-         * MeshQuality behavior. Native RNR Phase D can disable them so doQuality() runs the
-         * Okuda I<->H reconnection pass in isolation; this avoids the known finite-Kelvin
-         * stock-collapse crash while still exercising the live MeshQuality scheduler.
+         * These are TissueForge's pre-existing vertex split/merge, surface/body demote, and 2D
+         * collision repair passes. Enabled by default to preserve historical MeshQuality behavior.
+         * When false, doQuality() runs only the native RNR (Okuda I<->H) reconnection pass. The
+         * three per-pass flags below give finer control: a pass runs only if BOTH this master flag
+         * and its per-pass flag are true. This lets the native RNR coexist with the stock passes
+         * without an all-or-nothing switch (e.g. keep vertex/surface ops while excluding body
+         * demotion, which is not finite-block-safe -- see stockBodyOps).
          */
         bool stockQualityOps;
+
+        /** Whether the stock vertex pass (merge/split) runs (when stockQualityOps is also true). */
+        bool stockVertexOps;
+
+        /** Whether the stock surface pass (surface demote + 2D collision) runs (when stockQualityOps
+         *  is also true). The collision sub-step is additionally gated by collision2D. */
+        bool stockSurfaceOps;
+
+        /**
+         * Whether the stock body pass (body -> vertex demotion) runs (when stockQualityOps is also
+         * true). Default true preserves historical behavior, BUT the body-demotion collapse is not
+         * robust on finite (free-surface) blocks: when a cell's volume falls below bodyDemoteVolume
+         * the degenerate body->vertex collapse (Vertex::replace) can cascade and crash. A vertex
+         * model that drives topology change through the native RNR reconnection instead of stock
+         * collapses should set this false to coexist safely with the stock vertex/surface passes.
+         */
+        bool stockBodyOps;
 
         /**
          * Reconnection throttle interval (the 3DVertVor oracle's dtr, in doQuality calls).
@@ -441,6 +460,31 @@ namespace TissueForge::models::vertex {
          */
         HRESULT setStockQualityOps(const bool &_val);
 
+        /** @brief Get whether the stock vertex pass (merge/split) runs (with stockQualityOps). */
+        bool getStockVertexOps() const { return stockVertexOps; };
+
+        /** @brief Set whether the stock vertex pass (merge/split) runs (with stockQualityOps). */
+        HRESULT setStockVertexOps(const bool &_val);
+
+        /** @brief Get whether the stock surface pass (demote + 2D collision) runs (with stockQualityOps). */
+        bool getStockSurfaceOps() const { return stockSurfaceOps; };
+
+        /** @brief Set whether the stock surface pass (demote + 2D collision) runs (with stockQualityOps). */
+        HRESULT setStockSurfaceOps(const bool &_val);
+
+        /** @brief Get whether the stock body pass (body->vertex demotion) runs (with stockQualityOps). */
+        bool getStockBodyOps() const { return stockBodyOps; };
+
+        /**
+         * @brief Set whether the stock body pass (body->vertex demotion) runs (with stockQualityOps).
+         *
+         * Default true preserves historical behavior; set false to coexist safely with the native
+         * RNR pass on finite blocks (the body-demotion collapse is not finite-block-safe).
+         *
+         * @param _val flag
+         */
+        HRESULT setStockBodyOps(const bool &_val);
+
         /**
          * @brief Get the reconnection throttle interval (doQuality calls between reconnection passes)
          */
@@ -457,52 +501,52 @@ namespace TissueForge::models::vertex {
          */
         HRESULT setReconnectInterval(const unsigned int &_val);
 
+#ifdef TF_VERTEX_RNR_DEBUG
+        // --- RNR diagnostic / debug entry points (NOT part of the stable API) ----------------
+        //
+        // Exposed only when built with TF_VERTEX_RNR_DEBUG (the default in development builds; a
+        // knobs-only production build sets it OFF and omits these). They return JSON object/array
+        // strings for Python-side introspection and testing. The forceReconnect* pair bypasses the
+        // candidate scan and all scheduling/safety, so it can corrupt the mesh if misused.
+
         /**
-         * @brief Diagnostic (read-only): analyze the I->H reconnection neighborhood of the
-         *        short edge (v10Id, v11Id) on the current mesh.
-         *
-         * The native port of rnr/topology.py i_neighbourhood + rnr/conditions.py i_to_h_veto.
-         * Returns a JSON object string {valid, kind, v10_id, v11_id, cap_top_id, cap_bot_id,
-         * side_cell_ids, length, legal, veto_reason}. A debug entry point used by the Phase-B
-         * gate test to cross-check the native walk + Condition-4 vetoes against the validated
-         * Python prototype (the oracle). Does not mutate the mesh.
+         * @brief Diagnostic (read-only): analyze the I->H reconnection neighborhood of the short
+         *        edge (v10Id, v11Id) on the current mesh. Returns a JSON object string
+         *        {valid, kind, v10_id, v11_id, cap_top_id, cap_bot_id, side_cell_ids, length,
+         *        legal, veto_reason}. Does not mutate the mesh.
          */
         std::string analyzeIReconnection(const unsigned int &v10Id, const unsigned int &v11Id) const;
 
         /**
          * @brief Diagnostic (read-only): analyze the H->I reconnection neighborhood of the
-         *        triangular surface triId on the current mesh (port of h_neighbourhood +
-         *        h_to_i_veto). Returns a JSON object string; does not mutate the mesh.
+         *        triangular surface triId. Returns a JSON object string; does not mutate the mesh.
          */
         std::string analyzeHReconnection(const unsigned int &triId) const;
 
         /**
-         * @brief Diagnostic (read-only): JSON array of every reconnection candidate the native
-         *        scan finds at the current reconnectLength (Okuda Condition 2) -- both I->H short
-         *        edges and H->I small triangles -- each tagged legal + veto_reason. Returns "[]"
-         *        when reconnectLength <= 0. Same scanners doQuality uses; does not mutate the mesh.
+         * @brief Diagnostic (read-only): JSON array of every reconnection candidate the native scan
+         *        finds at the current reconnectLength (Okuda Condition 2) -- both I->H short edges
+         *        and H->I small triangles -- each tagged legal + veto_reason. Returns "[]" when
+         *        reconnectLength <= 0. Same scanners doQuality uses; does not mutate the mesh.
          */
         std::string findReconnectionCandidates() const;
 
         /**
-         * @brief Debug/test entry point: force one native I->H reconnection on the current
-         *        mesh, bypassing the scan and stock quality passes.
-         *
-         * Uses reconnectLength as Okuda Delta_l_th for vertex placement. Returns a JSON
-         * object string {ok, reason, new_surface_id, new_vertex_ids}. Intended for the
-         * Phase-C native round-trip gate; does not run the broader doQuality pipeline.
+         * @brief Debug entry point: force one native I->H reconnection on the current mesh,
+         *        bypassing the scan and stock quality passes. Uses reconnectLength as the Okuda
+         *        placement length. Returns a JSON object string {ok, reason, new_surface_id,
+         *        new_vertex_ids}. Mutates the mesh; not part of the stable API.
          */
         std::string forceReconnectIToH(const unsigned int &v10Id, const unsigned int &v11Id) const;
 
         /**
-         * @brief Debug/test entry point: force one native H->I reconnection on the current
-         *        mesh, bypassing the scan and stock quality passes.
-         *
-         * Uses reconnectLength as Okuda Delta_l_th for vertex placement. Returns a JSON
-         * object string {ok, reason, new_surface_id, new_vertex_ids}. Intended for the
-         * Phase-C native round-trip gate; does not run the broader doQuality pipeline.
+         * @brief Debug entry point: force one native H->I reconnection on the current mesh,
+         *        bypassing the scan and stock quality passes. Uses reconnectLength as the Okuda
+         *        placement length. Returns a JSON object string {ok, reason, new_surface_id,
+         *        new_vertex_ids}. Mutates the mesh; not part of the stable API.
          */
         std::string forceReconnectHToI(const unsigned int &triId) const;
+#endif // TF_VERTEX_RNR_DEBUG
 
         /**
          * @brief Get whether 2D collisions are implemented

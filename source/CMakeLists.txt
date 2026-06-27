@@ -317,6 +317,9 @@ add_library(
 )
 
 target_compile_definitions(TissueForge_obj PRIVATE C_BUILDING_DLL)
+if(TF_VERTEX_RNR_DEBUG)
+    target_compile_definitions(TissueForge_obj PRIVATE TF_VERTEX_RNR_DEBUG)
+endif()
 
 set_target_properties(
   TissueForge_obj 
