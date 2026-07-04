@@ -321,6 +321,41 @@ namespace TissueForge::models::vertex {
         /** @brief Get the director rotational diffusion coefficient */
         static FloatP_t getMotilityDr();
 
+        /**
+         * @brief Whether the per-body volume-orientation repair is enabled.
+         *
+         * When enabled (the default), a cell whose signed volume transiently goes negative
+         * reports |volume| and caches its winding parity so the VolumeConstraint force stays
+         * restoring through the eversion. The initial value defaults from the environment
+         * variable TF_VERTEX_NO_VOLUME_REPAIR (=1 to disable) and is settable here at runtime.
+         */
+        static bool getVolumeRepair();
+
+        /** @brief Enable/disable the per-body volume-orientation repair at runtime. */
+        static HRESULT setVolumeRepair(bool enabled);
+
+        /** @brief Whether the motility RNG stream has been seeded (serialization support) */
+        static bool getMotilitySeeded();
+
+        /** @brief Serialize the motility RNG stream state (serialization support). Returns
+         *  the std::mt19937 state as a whitespace-delimited string, or "" if unseeded. */
+        static std::string getMotilityRngState();
+
+        /**
+         * @brief Restore the full motility state (serialization support).
+         *
+         * Unlike setMotility, this sets v0/Dr/seeded and the RNG stream directly WITHOUT
+         * re-seeding or re-randomizing the directors, so a save/restore reproduces the
+         * exact continuing director trajectory. Directors themselves are restored per-cell
+         * via Body serialization.
+         *
+         * @param v0 active self-propulsion speed
+         * @param Dr rotational diffusion coefficient
+         * @param seeded whether the RNG stream was seeded
+         * @param rngState std::mt19937 state string from getMotilityRngState (ignored if !seeded)
+         */
+        static HRESULT restoreMotility(const FloatP_t &v0, const FloatP_t &Dr, bool seeded, const std::string &rngState);
+
         HRESULT preStepStart() override;
         HRESULT preStepJoin() override;
         HRESULT postStepStart() override;

@@ -48,7 +48,21 @@ namespace TissueForge::models::vertex {
     struct SurfaceType;
 
     /**
-     * @brief The mesh body is a volume-enclosing object of mesh surfaces. 
+     * @brief Whether the per-body volume-orientation repair is enabled.
+     *
+     * When enabled (the default), a cell whose signed volume transiently goes negative
+     * (an eversion from a noise/reconnection overshoot) reports |volume| and caches a
+     * winding-parity sign so the VolumeConstraint force stays restoring. The initial
+     * value defaults from the environment variable TF_VERTEX_NO_VOLUME_REPAIR (=1 to
+     * disable) and can then be changed at runtime via setVolumeOrientationRepair.
+     */
+    CAPI_FUNC(bool) getVolumeOrientationRepair();
+
+    /** @brief Enable/disable the per-body volume-orientation repair at runtime. */
+    CAPI_FUNC(void) setVolumeOrientationRepair(bool enabled);
+
+    /**
+     * @brief The mesh body is a volume-enclosing object of mesh surfaces.
      * 
      * The mesh body consists of at least four mesh surfaces. 
      * 

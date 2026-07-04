@@ -28,6 +28,11 @@ vertex_solver_MeshObj_prep_py(TissueForge::models::vertex::Body)
 // Body //
 //////////
 
+// The volume-orientation-repair flag is exposed to Python as MeshSolver.get/set_volume_repair
+// (see tfMeshSolver.i); the underlying free functions stay C++-only.
+%ignore TissueForge::models::vertex::getVolumeOrientationRepair;
+%ignore TissueForge::models::vertex::setVolumeOrientationRepair;
+
 %rename(_connectedBodies) TissueForge::models::vertex::Body::connectedBodies;
 %rename(_adjacentBodies) TissueForge::models::vertex::Body::adjacentBodies;
 %rename(update_internals) TissueForge::models::vertex::Body::updateInternals;

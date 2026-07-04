@@ -51,6 +51,12 @@
 %rename(set_motility) TissueForge::models::vertex::MeshSolver::setMotility;
 %rename(get_motility_v0) TissueForge::models::vertex::MeshSolver::getMotilityV0;
 %rename(get_motility_dr) TissueForge::models::vertex::MeshSolver::getMotilityDr;
+%rename(get_volume_repair) TissueForge::models::vertex::MeshSolver::getVolumeRepair;
+%rename(set_volume_repair) TissueForge::models::vertex::MeshSolver::setVolumeRepair;
+%rename(get_motility_seeded) TissueForge::models::vertex::MeshSolver::getMotilitySeeded;
+%rename(get_motility_rng_state) TissueForge::models::vertex::MeshSolver::getMotilityRngState;
+// restoreMotility is a serialization-internal (used by VertexSolverFIOModule); not public.
+%ignore TissueForge::models::vertex::MeshSolver::restoreMotility;
 
 %rename(_vertex_solver_MeshSolver) TissueForge::models::vertex::MeshSolver;
 %rename(_vertex_solver_MeshSolverTimers) TissueForge::models::vertex::MeshSolverTimers;

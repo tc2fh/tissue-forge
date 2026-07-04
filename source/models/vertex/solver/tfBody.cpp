@@ -50,12 +50,25 @@ using namespace TissueForge::models::vertex;
 // Enabled by default; set TF_VERTEX_NO_VOLUME_REPAIR=1 to fall back to stock signed
 // volume (used only by the load-bearing gate test that proves this repair is what
 // holds the noisy reconnecting sort together).
+// Runtime flag, initialized once from the environment (TF_VERTEX_NO_VOLUME_REPAIR=1
+// disables) and thereafter settable via setVolumeOrientationRepair. Keeping the env as
+// the default preserves the old behavior for existing scripts/gates while retiring the
+// env-only "magic knob" from the production surface.
+static bool _volumeRepairFlag = [](){
+    const char *e = std::getenv("TF_VERTEX_NO_VOLUME_REPAIR");
+    return !(e && e[0] == '1');
+}();
+
 static bool _volumeOrientationRepairEnabled() {
-    static const bool enabled = [](){
-        const char *e = std::getenv("TF_VERTEX_NO_VOLUME_REPAIR");
-        return !(e && e[0] == '1');
-    }();
-    return enabled;
+    return _volumeRepairFlag;
+}
+
+bool TissueForge::models::vertex::getVolumeOrientationRepair() {
+    return _volumeRepairFlag;
+}
+
+void TissueForge::models::vertex::setVolumeOrientationRepair(bool enabled) {
+    _volumeRepairFlag = enabled;
 }
 
 
@@ -1507,6 +1520,12 @@ namespace TissueForge::io {
         TF_IOTOEASY(fileElement, metaData, "density", dataElement->getDensity());
         TF_IOTOEASY(fileElement, metaData, "typeId", dataElement->typeId);
 
+        // Active-motility director: genuine persistent per-cell state (it evolves by
+        // rotational diffusion, it is not derived from geometry), so it must be saved to
+        // reproduce an active run across save/restore. (orientSign is NOT saved: it is
+        // recomputed from the signed volume in updateInternal on the next geometry pass.)
+        TF_IOTOEASY(fileElement, metaData, "director", dataElement->getDirector());
+
         if(dataElement->species) {
             TF_IOTOEASY(fileElement, metaData, "species", *dataElement->species);
         }
@@ -1539,6 +1558,12 @@ namespace TissueForge::io {
 
         std::vector<TissueForge::models::vertex::SurfaceHandle> surfaces;
         std::vector<int> surfacesIds;
+        // Load the body's constituent surface ids from file. Without this the vector stays
+        // empty, the body is created with zero surfaces (needs >= 4), and restore fails --
+        // the reason vertex-model save/restore produced empty meshes. Mirrors the sibling
+        // Surface::fromFile, which loads its "vertices" the same way; surfaces are restored
+        // before bodies (Mesh::fromFile order), so surfaceIdMap is already populated.
+        TF_IOFROMEASY(fileElement, metaData, "surfaces", &surfacesIds);
         for(auto &surfaceIdOld : surfacesIds) {
             auto surfaceId_itr = TissueForge::models::vertex::io::VertexSolverFIOModule::importSummary->surfaceIdMap.find(surfaceIdOld);
             if(surfaceId_itr == TissueForge::models::vertex::io::VertexSolverFIOModule::importSummary->surfaceIdMap.end()) {
@@ -1568,6 +1593,14 @@ namespace TissueForge::io {
 
         if(fec.find("species") != fec.end()) {
             TF_IOFROMEASY(fileElement, metaData, "species", &(*dataElement)->species);
+        }
+
+        // Restore the active-motility director (guarded for backward compatibility with
+        // files written before directors were serialized).
+        if(fec.find("director") != fec.end()) {
+            FVector3 director;
+            TF_IOFROMEASY(fileElement, metaData, "director", &director);
+            (*dataElement)->setDirector(director);
         }
 
         return S_OK;

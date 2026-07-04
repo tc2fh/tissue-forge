@@ -22,6 +22,7 @@
 #include "tfMeshObj.h"
 #include "tfMeshRenderer.h"
 #include "tfVertexSolverFIO.h"
+#include "tfBody.h"
 
 #include <tfEngine.h>
 #include <tf_util.h>
@@ -33,6 +34,7 @@
 #include <future>
 #include <typeinfo>
 #include <cmath>
+#include <sstream>
 
 
 #define TF_MESHSOLVER_CHECKINIT_RET(retval) { if(!_solver) return retval; }
@@ -411,6 +413,44 @@ FloatP_t MeshSolver::getMotilityDr() {
     TF_MESHSOLVER_CHECKINIT_RET(0)
 
     return _solver->_motilityDr;
+}
+
+bool MeshSolver::getVolumeRepair() {
+    return TissueForge::models::vertex::getVolumeOrientationRepair();
+}
+
+HRESULT MeshSolver::setVolumeRepair(bool enabled) {
+    TissueForge::models::vertex::setVolumeOrientationRepair(enabled);
+    return S_OK;
+}
+
+bool MeshSolver::getMotilitySeeded() {
+    TF_MESHSOLVER_CHECKINIT_RET(false)
+
+    return _solver->_motilitySeeded;
+}
+
+std::string MeshSolver::getMotilityRngState() {
+    TF_MESHSOLVER_CHECKINIT_RET(std::string())
+
+    if(!_solver->_motilitySeeded)
+        return std::string();
+    std::ostringstream ss;
+    ss << _solver->_motilityRng;   // std::mt19937 has a standard text serialization
+    return ss.str();
+}
+
+HRESULT MeshSolver::restoreMotility(const FloatP_t &v0, const FloatP_t &Dr, bool seeded, const std::string &rngState) {
+    TF_MESHSOLVER_CHECKINIT
+
+    _solver->_motilityV0 = v0;
+    _solver->_motilityDr = Dr;
+    _solver->_motilitySeeded = seeded;
+    if(seeded && !rngState.empty()) {
+        std::istringstream ss(rngState);
+        ss >> _solver->_motilityRng;   // exact stream restore -> continuing trajectory reproduces
+    }
+    return S_OK;
 }
 
 HRESULT MeshSolver::_positionChangedInst() {
