@@ -114,9 +114,10 @@ The vertex model solver implements quality operations to allow for an automatica
 dynamic mesh topology. In general, quality operations enforce rules that promote
 the quality of a mesh, whether kinematically (*e.g.*, no surfaces that are too small)
 or kinetically (*e.g.*, inserting a vertex to better distribute forces).
-Current development of the Tissue Forge vertex model solver has primarily targeted
-quality operations for two-dimensional simulation, and dynamic three-dimensional
-vertex model meshes are presently an active field of research.
+The quality operations listed below primarily target two-dimensional simulation.
+Dynamic *three-dimensional* mesh topology additionally requires a genuine 3D neighbor
+exchange, which the solver provides through :ref:`reversible network reconnection
+<vertex_solver_rnr>` (the 3D T1 transition); see that section for details.
 
 Currently the vertex model solver supports the following quality operations,
 
@@ -125,6 +126,7 @@ Currently the vertex model solver supports the following quality operations,
 * *Surface demote*: a surface becomes a vertex when its area is less than a threshold
 * *Vertex insert*: a vertex is inserted between two vertices of a surface when it penetrates the perimeter of the surface
 * *Vertex merge*: two vertices are merged into one vertex when separated by a distance less than a threshold
+* *Reconnection* (3D): a shared edge and its two abutting faces swap into the complementary configuration when the edge shrinks below a threshold, letting cells exchange neighbors in three dimensions (the 3D T1; see :ref:`Reversible network reconnection <vertex_solver_rnr>`)
 
 .. figure:: mesh_quality_2D.png
     :width: 600px
@@ -544,3 +546,74 @@ during simulation. ::
 .. note::
 
     The vertex model solver module currently does not support :ref:`GPU acceleration <cuda>`.
+
+.. _vertex_solver_rnr:
+
+Reversible Network Reconnection (3D T1)
+"""""""""""""""""""""""""""""""""""""""
+
+In two dimensions the solver reaches neighbor exchange through the *vertex merge* and
+*edge split* operations above: when an edge shrinks below a threshold its two vertices
+merge and then split along the perpendicular direction, swapping which cells share the
+edge. This merge/split pair *is* the 2D T1 transition. Three dimensions have no such
+shortcut, because the interface between two cells is a polygonal *face* rather than an
+edge. Neighbor exchange in 3D instead requires swapping a short shared edge and its two
+abutting faces into the complementary configuration -- a face becomes an edge (**H to
+I**) or an edge becomes a face (**I to H**). The solver provides this operation as a
+*reversible network reconnection* (RNR) quality operation, the three-dimensional
+analogue of the T1 transition. It is what allows cells in a 3D vertex mesh to exchange
+neighbors and, for example, sort by differential interfacial tension.
+
+The reconnection is triggered geometrically: an edge is reconnected once its length
+falls below a threshold :math:`\Delta l_{th}`, and the replacement vertices are placed a
+distance :math:`O(\Delta l_{th})` apart so the operation is reversible (the reverse
+reconnection re-fires immediately if the local energy has not changed). Reconnection is
+enabled and tuned through the mesh quality object, ::
+
+    mesh: tfv.Mesh = tfv.MeshSolver.get().get_mesh()
+    q = tfv.Quality()
+    q.reconnect_length = 0.2          # reconnect an edge once it shrinks below this length
+    q.reconnect_hysteresis = 0.2      # separation band that prevents immediate re-triggering
+    mesh.quality = q
+
+The reconnection pass runs alongside the stock quality operations rather than replacing
+them. Each stock pass can be toggled independently through the per-pass flags on the
+quality object (``stock_vertex_operations``, ``stock_surface_operations``,
+``stock_body_operations``), which is useful because the stock *body demote* pass is not
+robust on small, free-surface meshes and can be disabled while the vertex and surface
+passes continue, ::
+
+    q.stock_quality_operations = True     # run the stock passes ...
+    q.stock_body_operations = False       # ... except body demote
+
+The remaining reconnection controls are documented in the
+:ref:`Vertex Model Solver API Reference <api_vertex_solver_meshquality>`.
+
+**Active self-propulsion.** Sorting requires an active drive that keeps cells moving so
+short edges actually form and reconnect. The solver provides a native motility drive: a
+per-cell orientation (*director*) that evolves by rotational diffusion, applied as an
+active force on the cell's vertices. It is enabled through the solver, ::
+
+    tfv.MeshSolver.set_motility(v0, Dr, seed)   # speed, director rotational-diffusion rate, RNG seed
+
+and each body exposes its current director as ``body.director``. Because RNR (and noise)
+can transiently evert a cell, the solver keeps each cell's volume-constraint force
+restoring through such an eversion by caching its winding parity; this repair is enabled
+by default and can be toggled at runtime with
+``tfv.MeshSolver.set_volume_repair(True/False)``.
+
+The reconnecting vertex model composes with the rest of Tissue Forge as a subengine:
+RNR-equipped 3D cells can advance in the same simulation step as free particles and a
+:ref:`flux <flux>` species field, and the motility directors and drive parameters are
+preserved across :ref:`save and load <file_io>`.
+
+A complete, headless-runnable demonstration of 3D cell sorting driven by RNR is provided
+in ``models/vertex/solver/examples/cell_sorting_3d.py``.
+
+.. note::
+
+   The reversible network reconnection operation implements the algorithm of
+
+   Okuda et al. (2013). `"Reversible network reconnection model for simulating large
+   deformation in dynamic tissue morphogenesis." <https://doi.org/10.1007/s10237-012-0430-7>`_
+   *Biomechanics and Modeling in Mechanobiology*, 12(4), 627-644.
