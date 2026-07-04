@@ -70,9 +70,11 @@ HRESULT test_rnr_api_and_live_pipeline() {
     TF_TEST_EXPECT(mesh != NULL);
 
     // --- types: a cell and its interface surface ------------------------------------------
-    vm::BodyType *btype = new vm::BodyType();
+    // Construct with noReg=true so the type is NOT auto-registered by its constructor; we
+    // register it explicitly below to exercise the MeshSolver::registerType API path.
+    vm::BodyType *btype = new vm::BodyType(true);
     btype->name = "Cell";
-    vm::SurfaceType *stype = new vm::SurfaceType();
+    vm::SurfaceType *stype = new vm::SurfaceType(true);
     stype->name = "Interface";
     TF_TEST_CHECK(vm::MeshSolver::registerType(btype));
     TF_TEST_CHECK(vm::MeshSolver::registerType(stype));
